@@ -1,0 +1,16 @@
+version: "3.8"
+
+services:
+  ai-review-agent:
+    build: .
+    container_name: ai_review_agent
+    ports:
+      - "8080:8080"
+    volumes:
+      # Mount local data directory for persistent SQLite/File storage
+      - ./data:/app/data
+      # Mount repos directory to preserve shallow-cloned git repositories between restarts
+      - ./resource/repos:/app/resource/repos
+    env_file:
+      - .env
+    restart: unless-stopped

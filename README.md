@@ -47,7 +47,29 @@ Most open-source AI reviewers simply pipe your git diff into an LLM and spit out
 - A GitLab instance (or gitlab.com)
 - Access Tokens: GitLab (Personal/Project Access Token) and at least one LLM Provider (OpenAI, Anthropic, Google).
 
-### Installation & Config
+### Docker Installation (Recommended)
+
+The easiest way to get the agent running without managing Go environments is using Docker Compose.
+
+```bash
+git clone https://github.com/antlss/gitlab-review-agent.git
+cd gitlab-review-agent
+
+# Configure your environment
+cp .env.example .env
+# Edit .env to set your LLM tokens and GitLab credentials
+
+# Start the server in the background
+docker-compose up -d
+```
+
+Your webhook server will be live at port `8080`. You can execute the interactive CLI directly inside the running container:
+
+```bash
+docker exec -it ai_review_agent ./cli review --project-id 123 --mr-id 45
+```
+
+### Manual Installation (From Source)
 
 ```bash
 git clone https://github.com/antlss/gitlab-review-agent.git
