@@ -13,11 +13,15 @@ import (
 	"sync"
 	"time"
 
+	"log/slog"
+
 	"github.com/antlss/gitlab-review-agent/internal/shared"
 )
 
 const (
 	gitLockTimeout = 2 * time.Minute
+	cloneMaxRetries = 2
+	cloneRetryDelay = 3 * time.Second
 )
 
 type Manager struct {
@@ -78,7 +82,7 @@ func (m *Manager) FetchAndCheckout(ctx context.Context, projectID int64, project
 
 	if _, err := os.Stat(repoPath); os.IsNotExist(err) {
 		cloneURL := fmt.Sprintf("%s/%s.git", m.gitlabURL, projectPath)
-		if err := m.runGit(ctx, "", "clone", "--no-checkout", cloneURL, repoPath); err != nil {
+		if err := m.cloneWithRetry(ctx, cloneURL, repoPath); err != nil {
 			return fmt.Errorf("git clone: %w", err)
 		}
 	} else {
@@ -242,16 +246,56 @@ func (m *Manager) getAddedLines(ctx context.Context, repoPath, baseSHA, headSHA,
 	return lines, nil
 }
 
+// cloneWithRetry clones a repo with retry logic and cleanup on failure.
+// Uses --filter=blob:none for partial clone (downloads blobs on demand) to
+// reduce initial transfer size and avoid HTTP transport failures on large repos.
+func (m *Manager) cloneWithRetry(ctx context.Context, cloneURL, repoPath string) error {
+	var lastErr error
+	for attempt := 1; attempt <= cloneMaxRetries; attempt++ {
+		if err := m.runGit(ctx, "", "clone", "--no-checkout", "--filter=blob:none", cloneURL, repoPath); err != nil {
+			lastErr = err
+			// Clean up partial clone directory to avoid corrupted state
+			_ = os.RemoveAll(repoPath)
+			slog.Warn("git clone failed, retrying",
+				"attempt", attempt,
+				"max_retries", cloneMaxRetries,
+				"error", err,
+			)
+			if attempt < cloneMaxRetries {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(cloneRetryDelay):
+				}
+			}
+			continue
+		}
+		return nil
+	}
+	return lastErr
+}
+
 // gitEnv returns environment variables for git commands that inject the GitLab
-// token via GIT_CONFIG environment variables instead of storing it on disk.
+// token, http buffer, and HTTP/1.1 settings via GIT_CONFIG environment variables.
+// HTTP/1.1 is forced to avoid HTTP/2 stream errors with reverse proxies.
 func (m *Manager) gitEnv() []string {
 	if m.gitlabToken == "" {
-		return os.Environ()
+		return append(os.Environ(),
+			"GIT_CONFIG_COUNT=2",
+			"GIT_CONFIG_KEY_0=http.postBuffer",
+			"GIT_CONFIG_VALUE_0=524288000",
+			"GIT_CONFIG_KEY_1=http.version",
+			"GIT_CONFIG_VALUE_1=HTTP/1.1",
+		)
 	}
 	return append(os.Environ(),
-		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_COUNT=3",
 		"GIT_CONFIG_KEY_0=http.extraHeader",
 		fmt.Sprintf("GIT_CONFIG_VALUE_0=PRIVATE-TOKEN: %s", m.gitlabToken),
+		"GIT_CONFIG_KEY_1=http.postBuffer",
+		"GIT_CONFIG_VALUE_1=524288000",
+		"GIT_CONFIG_KEY_2=http.version",
+		"GIT_CONFIG_VALUE_2=HTTP/1.1",
 	)
 }
 
