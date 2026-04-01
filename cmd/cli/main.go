@@ -6,13 +6,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	"github.com/spf13/cobra"
+	"golang.org/x/sync/semaphore"
 
 	"github.com/antlss/gitlab-review-agent/internal/config"
 	"github.com/antlss/gitlab-review-agent/internal/core/agents/reviewer"
@@ -34,6 +38,7 @@ func main() {
 	}
 
 	rootCmd.AddCommand(reviewCmd())
+	rootCmd.AddCommand(cloneAllCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -263,6 +268,141 @@ func reviewCmd() *cobra.Command {
 	cmd.Flags().StringVar(&model, "model", "", "Override model")
 	cmd.MarkFlagRequired("project-id")
 	cmd.MarkFlagRequired("mr-id")
+
+	return cmd
+}
+
+func cloneAllCmd() *cobra.Command {
+	var concurrency int
+	var cloneTimeout time.Duration
+	var outputDir string
+	var skipExisting bool
+	var minAccessLevel int
+
+	cmd := &cobra.Command{
+		Use:   "clone-all",
+		Short: "Clone all accessible GitLab repositories into the repos directory",
+		Long: `Fetches every GitLab project the token can access and clones it locally.
+Repositories that already exist are updated with git fetch instead of re-cloned.
+Useful to pre-warm the local repo cache before starting the review server.
+
+Access levels: 10=guest, 20=reporter, 30=developer, 40=maintainer, 50=owner`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load()
+			if err != nil {
+				return fmt.Errorf("config: %w", err)
+			}
+			logger.Setup(cfg.Log.Level, cfg.Log.Format)
+
+			reposDir := cfg.Git.ReposDir
+			if outputDir != "" {
+				reposDir = outputDir
+			}
+			if err := os.MkdirAll(reposDir, 0o755); err != nil {
+				return fmt.Errorf("create repos dir: %w", err)
+			}
+
+			ctx := context.Background()
+			gitlabClient := gitlab.NewClient(cfg.GitLab.BaseURL, cfg.GitLab.Token)
+
+			fmt.Printf("Fetching project list from %s", cfg.GitLab.BaseURL)
+			if minAccessLevel > 0 {
+				fmt.Printf(" (min access level %d)", minAccessLevel)
+			}
+			fmt.Println("...")
+
+			projects, err := gitlabClient.ListAllProjects(ctx, minAccessLevel)
+			if err != nil {
+				return fmt.Errorf("list projects: %w", err)
+			}
+			fmt.Printf("Found %d projects. Cloning with concurrency=%d, per-repo timeout=%s\n\n",
+				len(projects), concurrency, cloneTimeout)
+
+			gitManager := git.NewManager(reposDir, cfg.GitLab.BaseURL, cfg.GitLab.Token)
+
+			sem := semaphore.NewWeighted(int64(concurrency))
+			var wg sync.WaitGroup
+
+			var (
+				nCloned  atomic.Int64
+				nFetched atomic.Int64
+				nSkipped atomic.Int64
+				nFailed  atomic.Int64
+				failMu   sync.Mutex
+				failures []string
+			)
+
+			for _, proj := range projects {
+				wg.Add(1)
+				go func(p gitlab.ProjectBasic) {
+					defer wg.Done()
+
+					// Acquire semaphore slot (respect global ctx for shutdown)
+					if acquireErr := sem.Acquire(ctx, 1); acquireErr != nil {
+						nFailed.Add(1)
+						fmt.Printf("  [FAIL] %s: %v\n", p.PathWithNamespace, acquireErr)
+						return
+					}
+					defer sem.Release(1)
+
+					// Skip-existing: don't even fetch if .git already present
+					if skipExisting {
+						gitDir := filepath.Join(gitManager.RepoPath(p.ID), ".git")
+						if _, statErr := os.Stat(gitDir); statErr == nil {
+							nSkipped.Add(1)
+							fmt.Printf("  [SKIP] %s\n", p.PathWithNamespace)
+							return
+						}
+					}
+
+					repoCtx, cancel := context.WithTimeout(ctx, cloneTimeout)
+					defer cancel()
+
+					cloned, opErr := gitManager.CloneOrFetch(repoCtx, p.ID, p.HTTPURLToRepo)
+					if opErr != nil {
+						nFailed.Add(1)
+						msg := fmt.Sprintf("%s: %v", p.PathWithNamespace, opErr)
+						failMu.Lock()
+						failures = append(failures, msg)
+						failMu.Unlock()
+						fmt.Printf("  [FAIL] %s\n", msg)
+						return
+					}
+					if cloned {
+						nCloned.Add(1)
+						fmt.Printf("  [NEW]  %s\n", p.PathWithNamespace)
+					} else {
+						nFetched.Add(1)
+						fmt.Printf("  [OK]   %s\n", p.PathWithNamespace)
+					}
+				}(proj)
+			}
+
+			wg.Wait()
+
+			// ── Summary ──────────────────────────────────────────────────────────
+			fmt.Println()
+			fmt.Println(strings.Repeat("─", 60))
+			fmt.Printf("Done. cloned=%d  fetched=%d  skipped=%d  failed=%d\n",
+				nCloned.Load(), nFetched.Load(), nSkipped.Load(), nFailed.Load())
+
+			if len(failures) > 0 {
+				fmt.Printf("\nFailed repos (%d):\n", len(failures))
+				for _, f := range failures {
+					fmt.Printf("  • %s\n", f)
+				}
+				return fmt.Errorf("%d repo(s) failed", len(failures))
+			}
+			return nil
+		},
+	}
+
+	cmd.Flags().IntVar(&concurrency, "concurrency", 3, "Number of parallel clone/fetch operations")
+	cmd.Flags().DurationVar(&cloneTimeout, "clone-timeout", 30*time.Minute, "Per-repo operation timeout (increase for very large repos)")
+	cmd.Flags().StringVar(&outputDir, "output-dir", "", "Override repos directory (default: GIT_REPOS_DIR from config)")
+	cmd.Flags().BoolVar(&skipExisting, "skip-existing", false, "Skip repos that already have a local clone (do not fetch updates)")
+	cmd.Flags().IntVar(&minAccessLevel, "min-access-level", 0, "Minimum access level filter (0=all, 20=reporter, 30=developer, 40=maintainer, 50=owner)")
+	cmd.SilenceUsage = true
 
 	return cmd
 }

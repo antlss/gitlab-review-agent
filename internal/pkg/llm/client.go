@@ -35,37 +35,38 @@ func NewClient(cfg config.LLMConfig, provider, model string) (shared.LLMClient, 
 // NewBalancedClientFromConfig creates a load-balanced LLM client using all
 // available API keys for the resolved provider.
 //
-// Logic:
-//   - Resolve provider + model (from default or repo override)
-//   - Collect all API keys for that provider
-//   - Create one client per key, all using the same model
-//   - Wrap in BalancedClient if multiple keys exist
-//   - Fall back to single NewClient if only one key
+// All results are wrapped in a BalancedClient regardless of key count so that
+// rate-limit rotation and the global concurrency semaphore are always active.
 func NewBalancedClientFromConfig(cfg config.LLMConfig, repoModelOverride *string) (shared.LLMClient, error) {
 	provider, model := ResolveModel(cfg, repoModelOverride)
 	keys := keysForProvider(cfg, provider)
-
-	if len(keys) <= 1 {
-		return NewClient(cfg, provider, model)
-	}
-
 	contextWindow := resolveContextWindow(cfg, model)
 
 	var clients []shared.LLMClient
-	for _, key := range keys {
-		c, err := newClientForProvider(provider, key, cfg.OpenAIBaseURL, model, contextWindow)
+
+	if len(keys) == 0 {
+		// No multi-key config — fall back to single-key defaults
+		c, err := NewClient(cfg, provider, model)
 		if err != nil {
-			slog.Warn("balancer: skipping invalid key", "provider", provider, "error", err)
-			continue
+			return nil, err
 		}
 		clients = append(clients, c)
-	}
-
-	if len(clients) == 0 {
-		return NewClient(cfg, provider, model)
-	}
-	if len(clients) == 1 {
-		return clients[0], nil
+	} else {
+		for _, key := range keys {
+			c, err := newClientForProvider(provider, key, cfg.OpenAIBaseURL, model, contextWindow)
+			if err != nil {
+				slog.Warn("balancer: skipping invalid key", "provider", provider, "error", err)
+				continue
+			}
+			clients = append(clients, c)
+		}
+		if len(clients) == 0 {
+			c, err := NewClient(cfg, provider, model)
+			if err != nil {
+				return nil, err
+			}
+			clients = append(clients, c)
+		}
 	}
 
 	slog.Info("created balanced LLM client",

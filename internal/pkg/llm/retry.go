@@ -3,6 +3,7 @@ package llm
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -12,8 +13,32 @@ import (
 
 const maxRetries = 3
 
-// doRequest performs an HTTP request with exponential-backoff retry on rate-limit
-// (429), overloaded (529), and transient server errors (503).
+// RateLimitError is returned by doRequest when the API responds with HTTP 429.
+// It is NOT retried inside doRequest so that BalancedClient can immediately
+// rotate to the next API key rather than waiting out the backoff on the same key.
+type RateLimitError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *RateLimitError) Error() string {
+	body := e.Body
+	if len(body) > 200 {
+		body = body[:200] + "..."
+	}
+	return fmt.Sprintf("rate_limited (HTTP %d): %s", e.StatusCode, body)
+}
+
+// IsRateLimitError reports whether err is or wraps a *RateLimitError.
+func IsRateLimitError(err error) bool {
+	var rle *RateLimitError
+	return errors.As(err, &rle)
+}
+
+// doRequest performs an HTTP request with exponential-backoff retry on transient
+// server errors (503, 529) and network failures.
+// HTTP 429 is returned immediately as *RateLimitError without internal retry —
+// BalancedClient handles key rotation and backoff at a higher level.
 // body bytes are re-used for each attempt since bytes.NewReader is seekable.
 func doRequest(
 	ctx context.Context,
@@ -54,9 +79,15 @@ func doRequest(
 			return nil, fmt.Errorf("read response: %w", readErr)
 		}
 
-		// Retry on rate-limit or transient server errors
-		if attempt < maxRetries && (resp.StatusCode == 429 || resp.StatusCode == 503 || resp.StatusCode == 529) {
-			slog.Warn("LLM rate limited or overloaded, retrying",
+		// 429: surface immediately as RateLimitError — no local retry
+		if resp.StatusCode == 429 {
+			slog.Warn("LLM rate limited", "attempt", attempt+1, "status", 429)
+			return nil, &RateLimitError{StatusCode: 429, Body: string(respBody)}
+		}
+
+		// Retry on transient server errors (NOT rate limits)
+		if attempt < maxRetries && (resp.StatusCode == 503 || resp.StatusCode == 529) {
+			slog.Warn("LLM server error, retrying",
 				"attempt", attempt+1, "status", resp.StatusCode)
 			if err := sleepCtx(ctx, backoff); err != nil {
 				return nil, err

@@ -31,6 +31,7 @@ func NewAnthropicClient(apiKey, model string, contextWindow int) (*AnthropicClie
 
 func (c *AnthropicClient) ModelName() string      { return c.model }
 func (c *AnthropicClient) ContextWindowSize() int { return c.contextWindow }
+func (c *AnthropicClient) ClientCount() int       { return 1 }
 
 func (c *AnthropicClient) Chat(ctx context.Context, req shared.ChatRequest) (*shared.ChatResponse, error) {
 	// Build request body

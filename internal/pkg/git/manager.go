@@ -246,6 +246,65 @@ func (m *Manager) getAddedLines(ctx context.Context, repoPath, baseSHA, headSHA,
 	return lines, nil
 }
 
+// CloneOrFetch clones the repository if absent, or fetches updates if it
+// already exists locally. It is designed for bulk pre-warm operations; the
+// caller should set an appropriate per-repo deadline on ctx.
+//
+// Returns cloned=true when a fresh clone was performed, false when an
+// existing repo was updated (or was already up to date after a failed fetch).
+func (m *Manager) CloneOrFetch(ctx context.Context, projectID int64, cloneURL string) (cloned bool, err error) {
+	repoPath := m.RepoPath(projectID)
+	gitDir := filepath.Join(repoPath, ".git")
+
+	if _, statErr := os.Stat(gitDir); statErr == nil {
+		// Repo exists — fetch updates with retry
+		if fetchErr := m.fetchWithRetry(ctx, repoPath); fetchErr != nil {
+			return false, fmt.Errorf("fetch: %w", fetchErr)
+		}
+		return false, nil
+	}
+
+	// If the directory exists but has no .git, it is corrupt/partial — remove it
+	if _, statErr := os.Stat(repoPath); statErr == nil {
+		_ = os.RemoveAll(repoPath)
+	}
+
+	if cloneErr := m.cloneWithRetry(ctx, cloneURL, repoPath); cloneErr != nil {
+		return false, fmt.Errorf("clone: %w", cloneErr)
+	}
+	return true, nil
+}
+
+// fetchWithRetry runs git fetch with exponential backoff to tolerate transient
+// network failures during bulk operations.
+func (m *Manager) fetchWithRetry(ctx context.Context, repoPath string) error {
+	const maxRetries = 3
+	backoff := 5 * time.Second
+	var lastErr error
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		if err := m.runGit(ctx, repoPath, "fetch", "origin", "--prune"); err != nil {
+			lastErr = err
+			slog.Warn("git fetch failed, retrying",
+				"attempt", attempt,
+				"max_retries", maxRetries,
+				"path", repoPath,
+				"error", err,
+			)
+			if attempt < maxRetries {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(backoff):
+				}
+				backoff = min(backoff*3, 45*time.Second)
+			}
+			continue
+		}
+		return nil
+	}
+	return lastErr
+}
+
 // cloneWithRetry clones a repo with retry logic and cleanup on failure.
 // Uses --filter=blob:none for partial clone (downloads blobs on demand) to
 // reduce initial transfer size and avoid HTTP transport failures on large repos.

@@ -321,6 +321,60 @@ func (c *Client) GetProject(ctx context.Context, projectID int64) (*shared.GitLa
 	}, nil
 }
 
+// ProjectBasic holds minimal project info needed for bulk clone operations.
+type ProjectBasic struct {
+	ID                int64
+	PathWithNamespace string
+	HTTPURLToRepo     string
+}
+
+// ListAllProjects fetches every project the current token can access, using
+// keyset-based pagination. minAccessLevel filters by access level
+// (0 = no filter, 20 = reporter, 30 = developer, 40 = maintainer, 50 = owner).
+func (c *Client) ListAllProjects(ctx context.Context, minAccessLevel int) ([]ProjectBasic, error) {
+	var all []ProjectBasic
+	path := "/projects?membership=true&per_page=100&order_by=id&sort=asc"
+	if minAccessLevel > 0 {
+		path += fmt.Sprintf("&min_access_level=%d", minAccessLevel)
+	}
+
+	for page := 1; ; page++ {
+		pagePath := fmt.Sprintf("%s&page=%d", path, page)
+		data, headers, err := c.doRequest(ctx, http.MethodGet, pagePath, nil)
+		if err != nil {
+			return nil, fmt.Errorf("page %d: %w", page, err)
+		}
+
+		var batch []struct {
+			ID                int64  `json:"id"`
+			PathWithNamespace string `json:"path_with_namespace"`
+			HTTPURLToRepo     string `json:"http_url_to_repo"`
+		}
+		if err := json.Unmarshal(data, &batch); err != nil {
+			return nil, fmt.Errorf("unmarshal projects page %d: %w", page, err)
+		}
+		for _, p := range batch {
+			all = append(all, ProjectBasic{
+				ID:                p.ID,
+				PathWithNamespace: p.PathWithNamespace,
+				HTTPURLToRepo:     p.HTTPURLToRepo,
+			})
+		}
+
+		// GitLab sets X-Next-Page to "" or "0" on the last page
+		next := headers.Get("X-Next-Page")
+		if next == "" || next == "0" {
+			break
+		}
+		nextPage, err := strconv.Atoi(next)
+		if err != nil || nextPage <= page {
+			break
+		}
+		page = nextPage - 1 // loop will increment
+	}
+	return all, nil
+}
+
 // ─── JSON helpers ────────────────────────────────────────────────────────────────
 
 type gitlabDiscussionJSON struct {

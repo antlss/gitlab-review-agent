@@ -287,10 +287,7 @@ func (a *Agent) buildUserMessage(input AgentInput) string {
 }
 
 func (a *Agent) compressContext(messages []shared.ChatMessage, notes *tools.NoteAccumulator) []shared.ChatMessage {
-	if len(messages) <= compressKeepRecent+1 {
-		return messages
-	}
-
+	// Separate system message and conversation
 	var systemMsg shared.ChatMessage
 	var conversation []shared.ChatMessage
 	for _, m := range messages {
@@ -301,12 +298,25 @@ func (a *Agent) compressContext(messages []shared.ChatMessage, notes *tools.Note
 		}
 	}
 
-	if len(conversation) <= compressKeepRecent {
+	// conversation[0] is the first user message containing preloaded diffs and MR
+	// context — it must never be dropped since the agent needs it to stay anchored
+	// to the actual diff content. We always preserve it and keep (compressKeepRecent-1)
+	// of the most recent messages alongside it.
+	if len(conversation) == 0 {
 		return messages
 	}
 
-	dropped := conversation[:len(conversation)-compressKeepRecent]
-	recent := conversation[len(conversation)-compressKeepRecent:]
+	firstUserMsg := conversation[0]
+	rest := conversation[1:]
+
+	keepRecent := compressKeepRecent - 1 // one slot is used by firstUserMsg
+	if len(rest) <= keepRecent {
+		// Nothing to drop — conversation is short enough
+		return messages
+	}
+
+	dropped := rest[:len(rest)-keepRecent]
+	recent := rest[len(rest)-keepRecent:]
 
 	seen := make(map[string]bool)
 	var toolsUsed []string
@@ -334,11 +344,13 @@ func (a *Agent) compressContext(messages []shared.ChatMessage, notes *tools.Note
 		summaryParts = append(summaryParts, "Saved notes (do NOT re-investigate these):\n"+notesSummary)
 	}
 
-	summaryParts = append(summaryParts, "Continue investigation from recent context below.")
+	summaryParts = append(summaryParts, "Continue investigation. The original MR diffs remain in the first message above.")
 	summary := strings.Join(summaryParts, "\n")
 
+	// Layout: system → first-user (diffs) → compaction-summary → recent messages
 	compressed := []shared.ChatMessage{
 		systemMsg,
+		firstUserMsg,
 		{Role: "user", Content: summary},
 	}
 	compressed = append(compressed, recent...)
@@ -346,6 +358,7 @@ func (a *Agent) compressContext(messages []shared.ChatMessage, notes *tools.Note
 	slog.Info("context compressed",
 		"old_len", len(messages),
 		"new_len", len(compressed),
+		"dropped", len(dropped),
 		"tools_summarized", strings.Join(toolsUsed, ", "),
 		"notes_saved", notesSummary != "",
 	)

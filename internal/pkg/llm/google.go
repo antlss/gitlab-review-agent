@@ -31,6 +31,7 @@ func NewGoogleClient(apiKey, model string, contextWindow int) (*GoogleClient, er
 
 func (c *GoogleClient) ModelName() string      { return c.model }
 func (c *GoogleClient) ContextWindowSize() int { return c.contextWindow }
+func (c *GoogleClient) ClientCount() int       { return 1 }
 
 func (c *GoogleClient) Chat(ctx context.Context, req shared.ChatRequest) (*shared.ChatResponse, error) {
 	// Build Gemini request

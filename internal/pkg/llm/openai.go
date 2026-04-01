@@ -37,6 +37,7 @@ func NewOpenAIClient(apiKey, baseURL, model string, contextWindow int) (*OpenAIC
 
 func (c *OpenAIClient) ModelName() string      { return c.model }
 func (c *OpenAIClient) ContextWindowSize() int { return c.contextWindow }
+func (c *OpenAIClient) ClientCount() int       { return 1 }
 
 func (c *OpenAIClient) Chat(ctx context.Context, req shared.ChatRequest) (*shared.ChatResponse, error) {
 	// Build messages

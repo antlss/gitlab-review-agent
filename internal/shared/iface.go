@@ -69,6 +69,10 @@ type LLMClient interface {
 	Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error)
 	ModelName() string
 	ContextWindowSize() int
+	// ClientCount returns the number of underlying API key clients.
+	// Single-provider clients return 1; BalancedClient returns the key count.
+	// Used by the pipeline to set adaptive chunk concurrency.
+	ClientCount() int
 }
 
 type Tool interface {
