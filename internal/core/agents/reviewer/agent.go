@@ -10,7 +10,7 @@ import (
 
 	"github.com/antlss/gitlab-review-agent/internal/core/prompt"
 	"github.com/antlss/gitlab-review-agent/internal/pkg/tools"
-	"github.com/antlss/gitlab-review-agent/internal/shared"
+	"github.com/antlss/gitlab-review-agent/internal/domain"
 )
 
 const (
@@ -26,15 +26,15 @@ func NewAgent() *Agent {
 }
 
 type AgentInput struct {
-	Job                  *shared.ReviewJob
-	ReviewCtx            *shared.ReviewContext
-	FilteredFiles        []shared.DiffFile
+	Job                  *domain.ReviewJob
+	ReviewCtx            *domain.ReviewContext
+	FilteredFiles        []domain.DiffFile
 	DiffStatFormatted    string
 	MaxIterations        int
 	SoftWarnAt           int
 	CompressionThreshold float64
 	Registry             *tools.Registry
-	LLMClient            shared.LLMClient
+	LLMClient            domain.LLMClient
 	PreloadedDiffs       string
 	AllDiffsPreloaded    bool
 	ResponseLanguage     prompt.ResponseLanguage
@@ -51,7 +51,7 @@ func (a *Agent) Run(ctx context.Context, input AgentInput) (*AgentResult, error)
 	systemPrompt := a.buildSystemPrompt(input)
 	userMessage := a.buildUserMessage(input)
 
-	messages := []shared.ChatMessage{
+	messages := []domain.ChatMessage{
 		{Role: "system", Content: systemPrompt},
 		{Role: "user", Content: userMessage},
 	}
@@ -64,13 +64,13 @@ func (a *Agent) Run(ctx context.Context, input AgentInput) (*AgentResult, error)
 		slog.Info("agent iteration started", "iteration", iteration+1, "max_iterations", input.MaxIterations, "messages_count", len(messages))
 
 		if iteration == input.SoftWarnAt {
-			messages = append(messages, shared.ChatMessage{
+			messages = append(messages, domain.ChatMessage{
 				Role:    "user",
 				Content: prompt.BudgetWarning(iteration, input.MaxIterations),
 			})
 		}
 
-		req := shared.ChatRequest{
+		req := domain.ChatRequest{
 			Model:     input.LLMClient.ModelName(),
 			Messages:  messages,
 			Tools:     input.Registry.Definitions(),
@@ -98,7 +98,7 @@ func (a *Agent) Run(ctx context.Context, input AgentInput) (*AgentResult, error)
 		}
 
 		if len(resp.ToolCalls) > 0 {
-			messages = append(messages, shared.ChatMessage{
+			messages = append(messages, domain.ChatMessage{
 				Role:      "assistant",
 				Content:   resp.Content,
 				ToolCalls: resp.ToolCalls,
@@ -112,7 +112,7 @@ func (a *Agent) Run(ctx context.Context, input AgentInput) (*AgentResult, error)
 			var wg sync.WaitGroup
 			for i, tc := range resp.ToolCalls {
 				wg.Add(1)
-				go func(i int, tc shared.ToolCall) {
+				go func(i int, tc domain.ToolCall) {
 					defer wg.Done()
 					defer func() {
 						if r := recover(); r != nil {
@@ -121,7 +121,7 @@ func (a *Agent) Run(ctx context.Context, input AgentInput) (*AgentResult, error)
 						}
 					}()
 
-					var toolInput shared.ToolInput
+					var toolInput domain.ToolInput
 					if err := json.Unmarshal([]byte(tc.InputJSON), &toolInput); err != nil {
 						slog.Warn("failed to unmarshal tool input",
 							"tool", tc.Name, "error", err)
@@ -144,7 +144,7 @@ func (a *Agent) Run(ctx context.Context, input AgentInput) (*AgentResult, error)
 			wg.Wait()
 
 			for _, r := range results {
-				messages = append(messages, shared.ChatMessage{
+				messages = append(messages, domain.ChatMessage{
 					Role:       "tool",
 					Content:    r.content,
 					ToolCallID: r.callID,
@@ -159,23 +159,23 @@ func (a *Agent) Run(ctx context.Context, input AgentInput) (*AgentResult, error)
 		}
 
 		if resp.Content != "" {
-			messages = append(messages, shared.ChatMessage{
+			messages = append(messages, domain.ChatMessage{
 				Role:    "assistant",
 				Content: resp.Content,
 			})
 		}
-		messages = append(messages, shared.ChatMessage{
+		messages = append(messages, domain.ChatMessage{
 			Role:    "user",
 			Content: prompt.AgentNudge,
 		})
 	}
 
-	messages = append(messages, shared.ChatMessage{
+	messages = append(messages, domain.ChatMessage{
 		Role:    "user",
 		Content: prompt.BudgetExhausted(input.MaxIterations),
 	})
 
-	req := shared.ChatRequest{
+	req := domain.ChatRequest{
 		Model:     input.LLMClient.ModelName(),
 		Messages:  messages,
 		MaxTokens: agentMaxTokens,
@@ -230,7 +230,7 @@ func (a *Agent) buildSystemPrompt(input AgentInput) string {
 		sb.WriteString("## Learn from Past Feedback\n")
 		for _, fb := range input.ReviewCtx.RecentFeedbacks {
 			signal := "accepted"
-			if fb.Signal == shared.FeedbackSignalRejected {
+			if fb.Signal == domain.FeedbackSignalRejected {
 				signal = "rejected"
 			}
 			sb.WriteString(fmt.Sprintf("- [%s] %s (%s)\n", signal, fb.CommentSummary, fb.Category))
@@ -293,10 +293,10 @@ func (a *Agent) buildUserMessage(input AgentInput) string {
 	return sb.String()
 }
 
-func (a *Agent) compressContext(messages []shared.ChatMessage, notes *tools.NoteAccumulator) []shared.ChatMessage {
+func (a *Agent) compressContext(messages []domain.ChatMessage, notes *tools.NoteAccumulator) []domain.ChatMessage {
 	// Separate system message and conversation
-	var systemMsg shared.ChatMessage
-	var conversation []shared.ChatMessage
+	var systemMsg domain.ChatMessage
+	var conversation []domain.ChatMessage
 	for _, m := range messages {
 		if m.Role == "system" {
 			systemMsg = m
@@ -355,7 +355,7 @@ func (a *Agent) compressContext(messages []shared.ChatMessage, notes *tools.Note
 	summary := strings.Join(summaryParts, "\n")
 
 	// Layout: system → first-user (diffs) → compaction-summary → recent messages
-	compressed := []shared.ChatMessage{
+	compressed := []domain.ChatMessage{
 		systemMsg,
 		firstUserMsg,
 		{Role: "user", Content: summary},

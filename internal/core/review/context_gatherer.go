@@ -10,20 +10,20 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/antlss/gitlab-review-agent/internal/core/prompt"
-	"github.com/antlss/gitlab-review-agent/internal/shared"
+	"github.com/antlss/gitlab-review-agent/internal/domain"
 )
 
 type ContextGatherer struct {
-	gitlabClient  shared.GitLabClient
-	repoSettings  shared.RepositorySettingsStore
-	feedbackStore shared.FeedbackStore
+	gitlabClient  domain.GitLabClient
+	repoSettings  domain.RepositorySettingsStore
+	feedbackStore domain.FeedbackStore
 	botUserID     int64
 }
 
 func NewContextGatherer(
-	gitlabClient shared.GitLabClient,
-	repoSettings shared.RepositorySettingsStore,
-	feedbackStore shared.FeedbackStore,
+	gitlabClient domain.GitLabClient,
+	repoSettings domain.RepositorySettingsStore,
+	feedbackStore domain.FeedbackStore,
 	botUserID int64,
 ) *ContextGatherer {
 	return &ContextGatherer{
@@ -35,12 +35,12 @@ func NewContextGatherer(
 }
 
 // Gather collects all review context concurrently.
-func (g *ContextGatherer) Gather(ctx context.Context, job *shared.ReviewJob, diffFiles []shared.DiffFile) (*shared.ReviewContext, error) {
+func (g *ContextGatherer) Gather(ctx context.Context, job *domain.ReviewJob, diffFiles []domain.DiffFile) (*domain.ReviewContext, error) {
 	var (
-		mrInfo      *shared.GitLabMR
-		settings    *shared.RepositorySettings
-		feedbacks   []*shared.ReviewFeedback
-		discussions []shared.GitLabDiscussion
+		mrInfo      *domain.GitLabMR
+		settings    *domain.RepositorySettings
+		feedbacks   []*domain.ReviewFeedback
+		discussions []domain.GitLabDiscussion
 	)
 
 	eg, gCtx := errgroup.WithContext(ctx)
@@ -83,7 +83,7 @@ func (g *ContextGatherer) Gather(ctx context.Context, job *shared.ReviewJob, dif
 		return nil, err
 	}
 
-	rc := &shared.ReviewContext{}
+	rc := &domain.ReviewContext{}
 
 	if mrInfo != nil {
 		rc.MRTitle = mrInfo.Title
@@ -99,8 +99,8 @@ func (g *ContextGatherer) Gather(ctx context.Context, job *shared.ReviewJob, dif
 		if fb.Signal == nil || fb.CommentSummary == nil {
 			continue
 		}
-		rc.RecentFeedbacks = append(rc.RecentFeedbacks, shared.FeedbackSnippet{
-			Category:       shared.DerefCategory(fb.Category),
+		rc.RecentFeedbacks = append(rc.RecentFeedbacks, domain.FeedbackSnippet{
+			Category:       domain.DerefCategory(fb.Category),
 			CommentSummary: *fb.CommentSummary,
 			Signal:         *fb.Signal,
 			CreatedAt:      fb.CreatedAt,
@@ -115,8 +115,8 @@ func (g *ContextGatherer) Gather(ctx context.Context, job *shared.ReviewJob, dif
 		if firstNote.Resolved || !firstNote.Resolvable {
 			continue
 		}
-		ec := shared.ExistingComment{
-			Summary: shared.Truncate(firstNote.Body, 100),
+		ec := domain.ExistingComment{
+			Summary: domain.Truncate(firstNote.Body, 100),
 		}
 		if firstNote.Position != nil {
 			ec.FilePath = firstNote.Position.FilePath
@@ -125,7 +125,7 @@ func (g *ContextGatherer) Gather(ctx context.Context, job *shared.ReviewJob, dif
 		rc.ExistingUnresolvedComments = append(rc.ExistingUnresolvedComments, ec)
 
 		if firstNote.AuthorID == g.botUserID && firstNote.Position != nil {
-			rc.BotUnresolvedComments = append(rc.BotUnresolvedComments, shared.BotUnresolvedComment{
+			rc.BotUnresolvedComments = append(rc.BotUnresolvedComments, domain.BotUnresolvedComment{
 				DiscussionID: d.ID,
 				FilePath:     firstNote.Position.FilePath,
 				LineNumber:   firstNote.Position.NewLine,
@@ -140,7 +140,7 @@ func (g *ContextGatherer) Gather(ctx context.Context, job *shared.ReviewJob, dif
 	return rc, nil
 }
 
-func detectLanguage(files []shared.DiffFile, override *string) string {
+func detectLanguage(files []domain.DiffFile, override *string) string {
 	if override != nil && *override != "" {
 		return *override
 	}
@@ -176,7 +176,7 @@ func detectLanguage(files []shared.DiffFile, override *string) string {
 	return best
 }
 
-func detectFramework(files []shared.DiffFile, override *string) string {
+func detectFramework(files []domain.DiffFile, override *string) string {
 	if override != nil && *override != "" {
 		return *override
 	}

@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/antlss/gitlab-review-agent/internal/shared"
+	"github.com/antlss/gitlab-review-agent/internal/domain"
 )
 
 // ─── read_file ──────────────────────────────────────────────────────────────────
@@ -37,7 +37,7 @@ func (t *ReadFileTool) InputSchema() map[string]any {
 	}
 }
 
-func (t *ReadFileTool) Execute(_ context.Context, input shared.ToolInput) (*shared.ToolResult, error) {
+func (t *ReadFileTool) Execute(_ context.Context, input domain.ToolInput) (*domain.ToolResult, error) {
 	path, _ := input["path"].(string)
 	if path == "" {
 		return toolError("path is required"), nil
@@ -65,8 +65,8 @@ func (t *ReadFileTool) Execute(_ context.Context, input shared.ToolInput) (*shar
 	}
 	defer file.Close()
 
-	startLine := shared.GetIntOr(input, "start_line", 1)
-	endLine := shared.GetIntOr(input, "end_line", 0)
+	startLine := domain.GetIntOr(input, "start_line", 1)
+	endLine := domain.GetIntOr(input, "end_line", 0)
 
 	var lines []string
 	scanner := bufio.NewScanner(file)
@@ -86,14 +86,14 @@ func (t *ReadFileTool) Execute(_ context.Context, input shared.ToolInput) (*shar
 		}
 	}
 
-	return &shared.ToolResult{Content: strings.Join(lines, "\n")}, nil
+	return &domain.ToolResult{Content: strings.Join(lines, "\n")}, nil
 }
 
 // ─── get_multi_diff ─────────────────────────────────────────────────────────────
 
 type GetMultiDiffTool struct {
 	rootPath  string
-	diffFiles []shared.DiffFile
+	diffFiles []domain.DiffFile
 	maxFiles  int
 	maxKB     int
 	baseSHA   string
@@ -115,7 +115,7 @@ func (t *GetMultiDiffTool) InputSchema() map[string]any {
 	}
 }
 
-func (t *GetMultiDiffTool) Execute(ctx context.Context, input shared.ToolInput) (*shared.ToolResult, error) {
+func (t *GetMultiDiffTool) Execute(ctx context.Context, input domain.ToolInput) (*domain.ToolResult, error) {
 	pathsRaw, _ := input["paths"].([]any)
 	if len(pathsRaw) == 0 {
 		return toolError("paths is required"), nil
@@ -161,7 +161,7 @@ func (t *GetMultiDiffTool) Execute(ctx context.Context, input shared.ToolInput) 
 	if len(content) > t.maxKB*1024 {
 		content = content[:t.maxKB*1024] + "\n... (truncated)"
 	}
-	return &shared.ToolResult{Content: content}, nil
+	return &domain.ToolResult{Content: content}, nil
 }
 
 // ─── search_code ────────────────────────────────────────────────────────────────
@@ -187,7 +187,7 @@ func (t *SearchCodeTool) InputSchema() map[string]any {
 	}
 }
 
-func (t *SearchCodeTool) Execute(ctx context.Context, input shared.ToolInput) (*shared.ToolResult, error) {
+func (t *SearchCodeTool) Execute(ctx context.Context, input domain.ToolInput) (*domain.ToolResult, error) {
 	pattern, _ := input["pattern"].(string)
 	if pattern == "" {
 		return toolError("pattern is required"), nil
@@ -227,7 +227,7 @@ func (t *SearchCodeTool) Execute(ctx context.Context, input shared.ToolInput) (*
 		lines = lines[:t.maxResults]
 		lines = append(lines, fmt.Sprintf("... (showing first %d results)", t.maxResults))
 	}
-	return &shared.ToolResult{Content: strings.Join(lines, "\n")}, nil
+	return &domain.ToolResult{Content: strings.Join(lines, "\n")}, nil
 }
 
 // ─── read_multi_file ────────────────────────────────────────────────────────────
@@ -253,7 +253,7 @@ func (t *ReadMultiFileTool) InputSchema() map[string]any {
 	}
 }
 
-func (t *ReadMultiFileTool) Execute(_ context.Context, input shared.ToolInput) (*shared.ToolResult, error) {
+func (t *ReadMultiFileTool) Execute(_ context.Context, input domain.ToolInput) (*domain.ToolResult, error) {
 	pathsRaw, _ := input["paths"].([]any)
 	if len(pathsRaw) == 0 {
 		return toolError("paths is required"), nil
@@ -297,7 +297,7 @@ func (t *ReadMultiFileTool) Execute(_ context.Context, input shared.ToolInput) (
 		fmt.Fprintf(&result, "--- %s ---\n%s\n\n", path, strings.Join(lines, "\n"))
 	}
 
-	return &shared.ToolResult{Content: result.String()}, nil
+	return &domain.ToolResult{Content: result.String()}, nil
 }
 
 // ─── list_dir ───────────────────────────────────────────────────────────────────
@@ -319,7 +319,7 @@ func (t *ListDirTool) InputSchema() map[string]any {
 	}
 }
 
-func (t *ListDirTool) Execute(_ context.Context, input shared.ToolInput) (*shared.ToolResult, error) {
+func (t *ListDirTool) Execute(_ context.Context, input domain.ToolInput) (*domain.ToolResult, error) {
 	path, _ := input["path"].(string)
 	if path == "" {
 		path = "."
@@ -333,7 +333,7 @@ func (t *ListDirTool) Execute(_ context.Context, input shared.ToolInput) (*share
 	var result strings.Builder
 	walkDir(absPath, t.rootPath, "", 0, 3, &result)
 
-	return &shared.ToolResult{Content: result.String()}, nil
+	return &domain.ToolResult{Content: result.String()}, nil
 }
 
 func walkDir(dir, root, prefix string, depth, maxDepth int, result *strings.Builder) {
@@ -388,7 +388,7 @@ func (t *GetSymbolDefinitionTool) InputSchema() map[string]any {
 	}
 }
 
-func (t *GetSymbolDefinitionTool) Execute(ctx context.Context, input shared.ToolInput) (*shared.ToolResult, error) {
+func (t *GetSymbolDefinitionTool) Execute(ctx context.Context, input domain.ToolInput) (*domain.ToolResult, error) {
 	symbol, _ := input["symbol"].(string)
 	if symbol == "" {
 		return toolError("symbol is required"), nil
@@ -440,7 +440,7 @@ func (t *GetSymbolDefinitionTool) Execute(ctx context.Context, input shared.Tool
 	if content == "" {
 		content = fmt.Sprintf("No definition found for symbol '%s'", symbol)
 	}
-	return &shared.ToolResult{Content: content}, nil
+	return &domain.ToolResult{Content: content}, nil
 }
 
 // ─── get_git_log ────────────────────────────────────────────────────────────────
@@ -464,8 +464,8 @@ func (t *GetGitLogTool) InputSchema() map[string]any {
 	}
 }
 
-func (t *GetGitLogTool) Execute(ctx context.Context, input shared.ToolInput) (*shared.ToolResult, error) {
-	maxCommits := shared.GetIntOr(input, "max_commits", 20)
+func (t *GetGitLogTool) Execute(ctx context.Context, input domain.ToolInput) (*domain.ToolResult, error) {
+	maxCommits := domain.GetIntOr(input, "max_commits", 20)
 	if maxCommits <= 0 || maxCommits > 100 {
 		maxCommits = 20
 	}
@@ -486,7 +486,7 @@ func (t *GetGitLogTool) Execute(ctx context.Context, input shared.ToolInput) (*s
 	if content == "" {
 		content = "No commits found between base and head."
 	}
-	return &shared.ToolResult{Content: content}, nil
+	return &domain.ToolResult{Content: content}, nil
 }
 
 // ─── get_file_outline ───────────────────────────────────────────────────────────
@@ -510,7 +510,7 @@ func (t *GetFileOutlineTool) InputSchema() map[string]any {
 	}
 }
 
-func (t *GetFileOutlineTool) Execute(ctx context.Context, input shared.ToolInput) (*shared.ToolResult, error) {
+func (t *GetFileOutlineTool) Execute(ctx context.Context, input domain.ToolInput) (*domain.ToolResult, error) {
 	path, _ := input["path"].(string)
 	if path == "" {
 		return toolError("path is required"), nil
@@ -542,7 +542,7 @@ func (t *GetFileOutlineTool) Execute(ctx context.Context, input shared.ToolInput
 		}
 		content = strings.Join(lines, "\n")
 	}
-	return &shared.ToolResult{Content: content}, nil
+	return &domain.ToolResult{Content: content}, nil
 }
 
 func outlinePattern(ext string) string {
@@ -590,13 +590,13 @@ func (t *SaveNoteTool) InputSchema() map[string]any {
 	}
 }
 
-func (t *SaveNoteTool) Execute(_ context.Context, input shared.ToolInput) (*shared.ToolResult, error) {
+func (t *SaveNoteTool) Execute(_ context.Context, input domain.ToolInput) (*domain.ToolResult, error) {
 	note, _ := input["note"].(string)
 	if note == "" {
 		return toolError("note is required"), nil
 	}
 	t.acc.Add(note)
-	return &shared.ToolResult{Content: "Note saved."}, nil
+	return &domain.ToolResult{Content: "Note saved."}, nil
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────────
@@ -616,6 +616,6 @@ func securePath(root, path string) (string, error) {
 	return abs, nil
 }
 
-func toolError(msg string) *shared.ToolResult {
-	return &shared.ToolResult{Error: &msg}
+func toolError(msg string) *domain.ToolResult {
+	return &domain.ToolResult{Error: &msg}
 }

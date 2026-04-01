@@ -7,7 +7,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/antlss/gitlab-review-agent/internal/shared"
+	"github.com/antlss/gitlab-review-agent/internal/domain"
 
 	"github.com/google/uuid"
 )
@@ -32,7 +32,7 @@ func feedbackByNoteFilename(noteID int64) string {
 	return fmt.Sprintf("_note_%d.json", noteID)
 }
 
-func (s *FeedbackStore) Create(_ context.Context, feedback *shared.ReviewFeedback) error {
+func (s *FeedbackStore) Create(_ context.Context, feedback *domain.ReviewFeedback) error {
 	feedback.ID = uuid.New()
 	feedback.CreatedAt = time.Now()
 	feedback.UpdatedAt = time.Now()
@@ -47,7 +47,7 @@ func (s *FeedbackStore) Create(_ context.Context, feedback *shared.ReviewFeedbac
 	return s.b.writeJSON(feedbackByNoteFilename(feedback.GitLabNoteID), feedback.ID)
 }
 
-func (s *FeedbackStore) GetByNoteID(_ context.Context, noteID int64) (*shared.ReviewFeedback, error) {
+func (s *FeedbackStore) GetByNoteID(_ context.Context, noteID int64) (*domain.ReviewFeedback, error) {
 	s.b.mu.RLock()
 	defer s.b.mu.RUnlock()
 
@@ -61,7 +61,7 @@ func (s *FeedbackStore) GetByNoteID(_ context.Context, noteID int64) (*shared.Re
 		return nil, fmt.Errorf("read note index: %w", err)
 	}
 
-	var fb shared.ReviewFeedback
+	var fb domain.ReviewFeedback
 	err = s.b.readJSON(feedbackFilename(id), &fb)
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -72,7 +72,7 @@ func (s *FeedbackStore) GetByNoteID(_ context.Context, noteID int64) (*shared.Re
 	return &fb, nil
 }
 
-func (s *FeedbackStore) UpdateSignal(_ context.Context, noteID int64, signal shared.FeedbackSignal, replyContent string) error {
+func (s *FeedbackStore) UpdateSignal(_ context.Context, noteID int64, signal domain.FeedbackSignal, replyContent string) error {
 	s.b.mu.Lock()
 	defer s.b.mu.Unlock()
 
@@ -83,7 +83,7 @@ func (s *FeedbackStore) UpdateSignal(_ context.Context, noteID int64, signal sha
 	}
 
 	fname := feedbackFilename(id)
-	var fb shared.ReviewFeedback
+	var fb domain.ReviewFeedback
 	if err := s.b.readJSON(fname, &fb); err != nil {
 		return fmt.Errorf("read feedback: %w", err)
 	}
@@ -94,7 +94,7 @@ func (s *FeedbackStore) UpdateSignal(_ context.Context, noteID int64, signal sha
 	return s.b.writeJSON(fname, &fb)
 }
 
-func (s *FeedbackStore) ListForConsolidation(_ context.Context, projectID int64, minAgeDays int) ([]*shared.ReviewFeedback, error) {
+func (s *FeedbackStore) ListForConsolidation(_ context.Context, projectID int64, minAgeDays int) ([]*domain.ReviewFeedback, error) {
 	s.b.mu.RLock()
 	defer s.b.mu.RUnlock()
 
@@ -104,13 +104,13 @@ func (s *FeedbackStore) ListForConsolidation(_ context.Context, projectID int64,
 		return nil, fmt.Errorf("list feedback files: %w", err)
 	}
 
-	var results []*shared.ReviewFeedback
+	var results []*domain.ReviewFeedback
 	for _, f := range files {
 		// Skip index files
 		if len(f) > 0 && f[0] == '_' {
 			continue
 		}
-		var fb shared.ReviewFeedback
+		var fb domain.ReviewFeedback
 		if err := s.b.readJSON(f, &fb); err != nil {
 			continue
 		}
@@ -138,7 +138,7 @@ func (s *FeedbackStore) MarkConsolidated(_ context.Context, ids []uuid.UUID) err
 	now := time.Now()
 	for _, id := range ids {
 		fname := feedbackFilename(id)
-		var fb shared.ReviewFeedback
+		var fb domain.ReviewFeedback
 		if err := s.b.readJSON(fname, &fb); err != nil {
 			continue
 		}
@@ -149,7 +149,7 @@ func (s *FeedbackStore) MarkConsolidated(_ context.Context, ids []uuid.UUID) err
 	return nil
 }
 
-func (s *FeedbackStore) ListRecentByProject(_ context.Context, projectID int64, limit int) ([]*shared.ReviewFeedback, error) {
+func (s *FeedbackStore) ListRecentByProject(_ context.Context, projectID int64, limit int) ([]*domain.ReviewFeedback, error) {
 	s.b.mu.RLock()
 	defer s.b.mu.RUnlock()
 
@@ -158,12 +158,12 @@ func (s *FeedbackStore) ListRecentByProject(_ context.Context, projectID int64, 
 		return nil, fmt.Errorf("list feedback files: %w", err)
 	}
 
-	var results []*shared.ReviewFeedback
+	var results []*domain.ReviewFeedback
 	for _, f := range files {
 		if len(f) > 0 && f[0] == '_' {
 			continue
 		}
-		var fb shared.ReviewFeedback
+		var fb domain.ReviewFeedback
 		if err := s.b.readJSON(f, &fb); err != nil {
 			continue
 		}

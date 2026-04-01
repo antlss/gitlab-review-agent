@@ -6,11 +6,11 @@ import (
 	"strings"
 
 	"github.com/antlss/gitlab-review-agent/internal/config"
-	"github.com/antlss/gitlab-review-agent/internal/shared"
+	"github.com/antlss/gitlab-review-agent/internal/domain"
 )
 
 // NewClient creates a single LLM client based on provider and model name.
-func NewClient(cfg config.LLMConfig, provider, model string) (shared.LLMClient, error) {
+func NewClient(cfg config.LLMConfig, provider, model string) (domain.LLMClient, error) {
 	if provider == "" {
 		provider = cfg.DefaultProvider
 	}
@@ -37,12 +37,12 @@ func NewClient(cfg config.LLMConfig, provider, model string) (shared.LLMClient, 
 //
 // All results are wrapped in a BalancedClient regardless of key count so that
 // rate-limit rotation and the global concurrency semaphore are always active.
-func NewBalancedClientFromConfig(cfg config.LLMConfig, repoModelOverride *string) (shared.LLMClient, error) {
+func NewBalancedClientFromConfig(cfg config.LLMConfig, repoModelOverride *string) (domain.LLMClient, error) {
 	provider, model := ResolveModel(cfg, repoModelOverride)
 	keys := keysForProvider(cfg, provider)
 	contextWindow := resolveContextWindow(cfg, model)
 
-	var clients []shared.LLMClient
+	var clients []domain.LLMClient
 
 	if len(keys) == 0 {
 		// No multi-key config — fall back to single-key defaults
@@ -90,7 +90,7 @@ func keysForProvider(cfg config.LLMConfig, provider string) []string {
 	}
 }
 
-func newClientForProvider(provider, apiKey, openAIBaseURL, model string, contextWindow int) (shared.LLMClient, error) {
+func newClientForProvider(provider, apiKey, openAIBaseURL, model string, contextWindow int) (domain.LLMClient, error) {
 	switch provider {
 	case "openai":
 		return NewOpenAIClient(apiKey, openAIBaseURL, model, contextWindow)

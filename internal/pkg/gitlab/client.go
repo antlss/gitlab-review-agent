@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/antlss/gitlab-review-agent/internal/shared"
+	"github.com/antlss/gitlab-review-agent/internal/domain"
 )
 
 type Client struct {
@@ -111,7 +111,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body any) (
 	return nil, nil, fmt.Errorf("all retries exhausted")
 }
 
-func (c *Client) GetMR(ctx context.Context, projectID, mrIID int64) (*shared.GitLabMR, error) {
+func (c *Client) GetMR(ctx context.Context, projectID, mrIID int64) (*domain.GitLabMR, error) {
 	path := fmt.Sprintf("/projects/%d/merge_requests/%d", projectID, mrIID)
 	data, _, err := c.doRequest(ctx, http.MethodGet, path, nil)
 	if err != nil {
@@ -134,7 +134,7 @@ func (c *Client) GetMR(ctx context.Context, projectID, mrIID int64) (*shared.Git
 		return nil, fmt.Errorf("unmarshal MR: %w", err)
 	}
 
-	return &shared.GitLabMR{
+	return &domain.GitLabMR{
 		IID:            raw.IID,
 		Title:          raw.Title,
 		Description:    raw.Description,
@@ -146,7 +146,7 @@ func (c *Client) GetMR(ctx context.Context, projectID, mrIID int64) (*shared.Git
 	}, nil
 }
 
-func (c *Client) ListMRFiles(ctx context.Context, projectID, mrIID int64) ([]shared.GitLabMRFile, error) {
+func (c *Client) ListMRFiles(ctx context.Context, projectID, mrIID int64) ([]domain.GitLabMRFile, error) {
 	path := fmt.Sprintf("/projects/%d/merge_requests/%d/changes", projectID, mrIID)
 	data, _, err := c.doRequest(ctx, http.MethodGet, path, nil)
 	if err != nil {
@@ -166,9 +166,9 @@ func (c *Client) ListMRFiles(ctx context.Context, projectID, mrIID int64) ([]sha
 		return nil, fmt.Errorf("unmarshal MR files: %w", err)
 	}
 
-	files := make([]shared.GitLabMRFile, len(raw.Changes))
+	files := make([]domain.GitLabMRFile, len(raw.Changes))
 	for i, ch := range raw.Changes {
-		files[i] = shared.GitLabMRFile{
+		files[i] = domain.GitLabMRFile{
 			OldPath:     ch.OldPath,
 			NewPath:     ch.NewPath,
 			NewFile:     ch.NewFile,
@@ -179,8 +179,8 @@ func (c *Client) ListMRFiles(ctx context.Context, projectID, mrIID int64) ([]sha
 	return files, nil
 }
 
-func (c *Client) GetMRDiscussions(ctx context.Context, projectID, mrIID int64) ([]shared.GitLabDiscussion, error) {
-	var all []shared.GitLabDiscussion
+func (c *Client) GetMRDiscussions(ctx context.Context, projectID, mrIID int64) ([]domain.GitLabDiscussion, error) {
+	var all []domain.GitLabDiscussion
 	page := 1
 	for {
 		path := fmt.Sprintf("/projects/%d/merge_requests/%d/discussions?page=%d&per_page=100", projectID, mrIID, page)
@@ -205,7 +205,7 @@ func (c *Client) GetMRDiscussions(ctx context.Context, projectID, mrIID int64) (
 	return all, nil
 }
 
-func (c *Client) GetDiscussion(ctx context.Context, projectID, mrIID int64, discussionID string) (*shared.GitLabDiscussion, error) {
+func (c *Client) GetDiscussion(ctx context.Context, projectID, mrIID int64, discussionID string) (*domain.GitLabDiscussion, error) {
 	path := fmt.Sprintf("/projects/%d/merge_requests/%d/discussions/%s", projectID, mrIID, discussionID)
 	data, _, err := c.doRequest(ctx, http.MethodGet, path, nil)
 	if err != nil {
@@ -221,7 +221,7 @@ func (c *Client) GetDiscussion(ctx context.Context, projectID, mrIID int64, disc
 	return &d, nil
 }
 
-func (c *Client) PostInlineComment(ctx context.Context, req shared.PostInlineCommentRequest) (*shared.PostCommentResponse, error) {
+func (c *Client) PostInlineComment(ctx context.Context, req domain.PostInlineCommentRequest) (*domain.PostCommentResponse, error) {
 	path := fmt.Sprintf("/projects/%d/merge_requests/%d/discussions", req.ProjectID, req.MrIID)
 	body := map[string]any{
 		"body": req.Body,
@@ -255,13 +255,13 @@ func (c *Client) PostInlineComment(ctx context.Context, req shared.PostInlineCom
 		noteID = resp.Notes[0].ID
 	}
 
-	return &shared.PostCommentResponse{
+	return &domain.PostCommentResponse{
 		NoteID:       noteID,
 		DiscussionID: resp.ID,
 	}, nil
 }
 
-func (c *Client) PostThreadComment(ctx context.Context, projectID, mrIID int64, body string) (*shared.PostCommentResponse, error) {
+func (c *Client) PostThreadComment(ctx context.Context, projectID, mrIID int64, body string) (*domain.PostCommentResponse, error) {
 	path := fmt.Sprintf("/projects/%d/merge_requests/%d/notes", projectID, mrIID)
 	reqBody := map[string]any{"body": body}
 
@@ -277,10 +277,10 @@ func (c *Client) PostThreadComment(ctx context.Context, projectID, mrIID int64, 
 		return nil, fmt.Errorf("unmarshal note response: %w", err)
 	}
 
-	return &shared.PostCommentResponse{NoteID: resp.ID}, nil
+	return &domain.PostCommentResponse{NoteID: resp.ID}, nil
 }
 
-func (c *Client) PostReply(ctx context.Context, projectID, mrIID int64, discussionID string, body string) (*shared.PostCommentResponse, error) {
+func (c *Client) PostReply(ctx context.Context, projectID, mrIID int64, discussionID string, body string) (*domain.PostCommentResponse, error) {
 	path := fmt.Sprintf("/projects/%d/merge_requests/%d/discussions/%s/notes", projectID, mrIID, discussionID)
 	reqBody := map[string]any{"body": body}
 
@@ -296,7 +296,7 @@ func (c *Client) PostReply(ctx context.Context, projectID, mrIID int64, discussi
 		return nil, fmt.Errorf("unmarshal reply response: %w", err)
 	}
 
-	return &shared.PostCommentResponse{
+	return &domain.PostCommentResponse{
 		NoteID:       resp.ID,
 		DiscussionID: discussionID,
 	}, nil
@@ -309,7 +309,7 @@ func (c *Client) ResolveDiscussion(ctx context.Context, projectID, mrIID int64, 
 	return err
 }
 
-func (c *Client) GetProject(ctx context.Context, projectID int64) (*shared.GitLabProject, error) {
+func (c *Client) GetProject(ctx context.Context, projectID int64) (*domain.GitLabProject, error) {
 	path := fmt.Sprintf("/projects/%d", projectID)
 	data, _, err := c.doRequest(ctx, http.MethodGet, path, nil)
 	if err != nil {
@@ -324,7 +324,7 @@ func (c *Client) GetProject(ctx context.Context, projectID int64) (*shared.GitLa
 		return nil, fmt.Errorf("unmarshal project: %w", err)
 	}
 
-	return &shared.GitLabProject{
+	return &domain.GitLabProject{
 		ID:         raw.ID,
 		PathWithNS: raw.PathWithNamespace,
 	}, nil
@@ -406,10 +406,10 @@ type gitlabDiscussionJSON struct {
 	} `json:"notes"`
 }
 
-func (d gitlabDiscussionJSON) toDomain() shared.GitLabDiscussion {
-	disc := shared.GitLabDiscussion{ID: d.ID}
+func (d gitlabDiscussionJSON) toDomain() domain.GitLabDiscussion {
+	disc := domain.GitLabDiscussion{ID: d.ID}
 	for _, n := range d.Notes {
-		note := shared.GitLabNote{
+		note := domain.GitLabNote{
 			ID:         n.ID,
 			AuthorID:   n.Author.ID,
 			AuthorName: n.Author.Username,
@@ -419,7 +419,7 @@ func (d gitlabDiscussionJSON) toDomain() shared.GitLabDiscussion {
 			CreatedAt:  n.CreatedAt,
 		}
 		if n.Position != nil {
-			note.Position = &shared.GitLabNotePosition{
+			note.Position = &domain.GitLabNotePosition{
 				FilePath: n.Position.NewPath,
 				NewLine:  n.Position.NewLine,
 				OldLine:  n.Position.OldLine,

@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/antlss/gitlab-review-agent/internal/shared"
+	"github.com/antlss/gitlab-review-agent/internal/domain"
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
@@ -22,7 +22,7 @@ func NewReviewJobStore(db *sqlx.DB) *ReviewJobStore {
 	return &ReviewJobStore{db: db}
 }
 
-func (s *ReviewJobStore) Create(ctx context.Context, job *shared.ReviewJob) error {
+func (s *ReviewJobStore) Create(ctx context.Context, job *domain.ReviewJob) error {
 	if job.ID == (uuid.UUID{}) {
 		return fmt.Errorf("review job ID must be set before calling Create")
 	}
@@ -48,7 +48,7 @@ func (s *ReviewJobStore) Create(ctx context.Context, job *shared.ReviewJob) erro
 			?, ?, ?
 		)`,
 		job.ID.String(), job.GitLabProjectID, job.MrIID, job.HeadSHA, job.BaseSHA,
-		job.TargetBranch, job.SourceBranch, shared.BoolToInt(job.IsForcePush), shared.BoolToInt(job.DryRun),
+		job.TargetBranch, job.SourceBranch, domain.BoolToInt(job.IsForcePush), domain.BoolToInt(job.DryRun),
 		string(job.TriggerSource), string(job.Status), job.RepoModelOverride, job.RepoLanguage,
 		job.RepoFramework, job.RepoExcludePatterns,
 		now.Format(time.RFC3339), now.Format(time.RFC3339), now.Format(time.RFC3339))
@@ -58,8 +58,8 @@ func (s *ReviewJobStore) Create(ctx context.Context, job *shared.ReviewJob) erro
 	return nil
 }
 
-func (s *ReviewJobStore) GetByID(ctx context.Context, id uuid.UUID) (*shared.ReviewJob, error) {
-	var job shared.ReviewJob
+func (s *ReviewJobStore) GetByID(ctx context.Context, id uuid.UUID) (*domain.ReviewJob, error) {
+	var job domain.ReviewJob
 	err := s.db.GetContext(ctx, &job,
 		`SELECT * FROM review_jobs WHERE id = ?`, id.String())
 	if errors.Is(err, sql.ErrNoRows) {
@@ -71,16 +71,16 @@ func (s *ReviewJobStore) GetByID(ctx context.Context, id uuid.UUID) (*shared.Rev
 	return &job, nil
 }
 
-func (s *ReviewJobStore) UpdateStatus(ctx context.Context, id uuid.UUID, status shared.ReviewJobStatus, errMsg *string) error {
+func (s *ReviewJobStore) UpdateStatus(ctx context.Context, id uuid.UUID, status domain.ReviewJobStatus, errMsg *string) error {
 	now := time.Now().Format(time.RFC3339)
 	query := `UPDATE review_jobs SET status = ?, error_message = ?, updated_at = ?`
 	args := []any{string(status), errMsg, now}
-	if status == shared.ReviewJobStatusReviewing {
+	if status == domain.ReviewJobStatusReviewing {
 		query += `, started_at = ?`
 		args = append(args, now)
 	}
-	if status == shared.ReviewJobStatusCompleted || status == shared.ReviewJobStatusFailed ||
-		status == shared.ReviewJobStatusParseFailed || status == shared.ReviewJobStatusSkippedSize {
+	if status == domain.ReviewJobStatusCompleted || status == domain.ReviewJobStatusFailed ||
+		status == domain.ReviewJobStatusParseFailed || status == domain.ReviewJobStatusSkippedSize {
 		query += `, completed_at = ?`
 		args = append(args, now)
 	}
@@ -103,7 +103,7 @@ func (s *ReviewJobStore) UpdateBaseSHA(ctx context.Context, id uuid.UUID, baseSH
 	return nil
 }
 
-func (s *ReviewJobStore) UpdateAIOutput(ctx context.Context, id uuid.UUID, raw string, parsed []shared.ParsedComment, iterations, tokens int) error {
+func (s *ReviewJobStore) UpdateAIOutput(ctx context.Context, id uuid.UUID, raw string, parsed []domain.ParsedComment, iterations, tokens int) error {
 	parsedJSON, err := json.Marshal(parsed)
 	if err != nil {
 		return fmt.Errorf("marshal parsed comments: %w", err)
@@ -129,7 +129,7 @@ func (s *ReviewJobStore) UpdateCompleted(ctx context.Context, id uuid.UUID, post
 			status = ?, total_comments_posted = ?, total_comments_suppressed = ?,
 			completed_at = ?, updated_at = ?
 		WHERE id = ?`,
-		string(shared.ReviewJobStatusCompleted), posted, suppressed, now, now, id.String())
+		string(domain.ReviewJobStatusCompleted), posted, suppressed, now, now, id.String())
 	if err != nil {
 		return fmt.Errorf("update completed: %w", err)
 	}
@@ -161,22 +161,22 @@ func (s *ReviewJobStore) ExistsPendingOrCompleted(ctx context.Context, projectID
 	return count > 0, nil
 }
 
-func (s *ReviewJobStore) ListStale(ctx context.Context, olderThanMinutes int) ([]*shared.ReviewJob, error) {
+func (s *ReviewJobStore) ListStale(ctx context.Context, olderThanMinutes int) ([]*domain.ReviewJob, error) {
 	cutoff := time.Now().Add(-time.Duration(olderThanMinutes) * time.Minute).Format(time.RFC3339)
-	var jobs []*shared.ReviewJob
+	var jobs []*domain.ReviewJob
 	err := s.db.SelectContext(ctx, &jobs, `
 		SELECT * FROM review_jobs
 		WHERE status = ?
 		AND started_at < ?`,
-		string(shared.ReviewJobStatusReviewing), cutoff)
+		string(domain.ReviewJobStatusReviewing), cutoff)
 	if err != nil {
 		return nil, fmt.Errorf("list stale jobs: %w", err)
 	}
 	return jobs, nil
 }
 
-func (s *ReviewJobStore) ListByProject(ctx context.Context, projectID int64, limit int) ([]*shared.ReviewJob, error) {
-	var jobs []*shared.ReviewJob
+func (s *ReviewJobStore) ListByProject(ctx context.Context, projectID int64, limit int) ([]*domain.ReviewJob, error) {
+	var jobs []*domain.ReviewJob
 	err := s.db.SelectContext(ctx, &jobs,
 		`SELECT * FROM review_jobs WHERE gitlab_project_id = ? ORDER BY created_at DESC LIMIT ?`,
 		projectID, limit)

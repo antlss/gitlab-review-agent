@@ -1,7 +1,7 @@
 package review
 
 import (
-	"github.com/antlss/gitlab-review-agent/internal/shared"
+	"github.com/antlss/gitlab-review-agent/internal/domain"
 	"math"
 	"path/filepath"
 	"strings"
@@ -28,7 +28,7 @@ func DefaultExcludePatterns() []string {
 }
 
 // ScoreRisk calculates risk score and tier for a diff file.
-func ScoreRisk(file *shared.DiffFile) {
+func ScoreRisk(file *domain.DiffFile) {
 	score := 0.0
 	lowerPath := strings.ToLower(file.Path)
 
@@ -64,11 +64,11 @@ func ScoreRisk(file *shared.DiffFile) {
 	file.RiskScore = score
 	switch {
 	case score >= 15:
-		file.RiskTier = shared.RiskHigh
+		file.RiskTier = domain.RiskHigh
 	case score >= 7:
-		file.RiskTier = shared.RiskMedium
+		file.RiskTier = domain.RiskMedium
 	default:
-		file.RiskTier = shared.RiskLow
+		file.RiskTier = domain.RiskLow
 	}
 }
 

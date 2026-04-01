@@ -5,16 +5,16 @@ import (
 	"log/slog"
 
 	"github.com/antlss/gitlab-review-agent/internal/core/feedback"
-	"github.com/antlss/gitlab-review-agent/internal/shared"
+	"github.com/antlss/gitlab-review-agent/internal/domain"
 )
 
 type FeedbackConsolidatorJob struct {
-	repoSettings shared.RepositorySettingsStore
+	repoSettings domain.RepositorySettingsStore
 	consolidator *feedback.Consolidator
 }
 
 func NewFeedbackConsolidatorJob(
-	repoSettings shared.RepositorySettingsStore,
+	repoSettings domain.RepositorySettingsStore,
 	consolidator *feedback.Consolidator,
 ) *FeedbackConsolidatorJob {
 	return &FeedbackConsolidatorJob{

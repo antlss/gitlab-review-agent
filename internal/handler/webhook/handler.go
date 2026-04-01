@@ -13,17 +13,17 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/antlss/gitlab-review-agent/internal/pkg/queue"
-	"github.com/antlss/gitlab-review-agent/internal/shared"
+	"github.com/antlss/gitlab-review-agent/internal/domain"
 )
 
 type Handler struct {
 	webhookSecret      string
 	botUserID          int64
 	reviewTriggerLabel string
-	repoSettings       shared.RepositorySettingsStore
-	reviewJobStore     shared.ReviewJobStore
-	replyJobStore      shared.ReplyJobStore
-	gitlabClient       shared.GitLabClient
+	repoSettings       domain.RepositorySettingsStore
+	reviewJobStore     domain.ReviewJobStore
+	replyJobStore      domain.ReplyJobStore
+	gitlabClient       domain.GitLabClient
 	queue              *queue.Queue
 	// serverCtx is cancelled when the server begins shutdown, bounding all
 	// background goroutines to the server lifecycle.
@@ -35,10 +35,10 @@ type HandlerDeps struct {
 	WebhookSecret      string
 	BotUserID          int64
 	ReviewTriggerLabel string
-	RepoSettings       shared.RepositorySettingsStore
-	ReviewJobStore     shared.ReviewJobStore
-	ReplyJobStore      shared.ReplyJobStore
-	GitLabClient       shared.GitLabClient
+	RepoSettings       domain.RepositorySettingsStore
+	ReviewJobStore     domain.ReviewJobStore
+	ReplyJobStore      domain.ReplyJobStore
+	GitLabClient       domain.GitLabClient
 	Queue              *queue.Queue
 	// ServerCtx should be a context cancelled when the server shuts down.
 	ServerCtx context.Context
@@ -175,15 +175,15 @@ func (h *Handler) handleMREvent(ctx context.Context, body []byte) {
 		return
 	}
 
-	job := &shared.ReviewJob{
+	job := &domain.ReviewJob{
 		ID:                  uuid.New(),
 		GitLabProjectID:     projectID,
 		MrIID:               attrs.IID,
 		HeadSHA:             headSHA,
 		TargetBranch:        attrs.TargetBranch,
 		SourceBranch:        attrs.SourceBranch,
-		TriggerSource:       shared.TriggerSourceWebhook,
-		Status:              shared.ReviewJobStatusPending,
+		TriggerSource:       domain.TriggerSourceWebhook,
+		Status:              domain.ReviewJobStatusPending,
 		RepoModelOverride:   settings.ModelOverride,
 		RepoLanguage:        settings.Language,
 		RepoFramework:       settings.Framework,
@@ -196,8 +196,8 @@ func (h *Handler) handleMREvent(ctx context.Context, body []byte) {
 		return
 	}
 
-	qJob := shared.QueueJob{
-		Type:       shared.QueueJobTypeReview,
+	qJob := domain.QueueJob{
+		Type:       domain.QueueJobTypeReview,
 		JobID:      job.ID,
 		ProjectID:  projectID,
 		EnqueuedAt: time.Now(),
@@ -276,7 +276,7 @@ func (h *Handler) handleNoteEvent(ctx context.Context, body []byte) {
 		lineNum = &ln
 	}
 
-	replyJob := &shared.ReplyJob{
+	replyJob := &domain.ReplyJob{
 		ID:                 uuid.New(),
 		GitLabProjectID:    projectID,
 		MrIID:              mrIID,
@@ -288,7 +288,7 @@ func (h *Handler) handleNoteEvent(ctx context.Context, body []byte) {
 		BotCommentContent:  firstNote.Body,
 		BotCommentFilePath: filePath,
 		BotCommentLine:     lineNum,
-		Status:             shared.ReplyJobStatusPending,
+		Status:             domain.ReplyJobStatusPending,
 		QueuedAt:           time.Now(),
 	}
 
@@ -297,8 +297,8 @@ func (h *Handler) handleNoteEvent(ctx context.Context, body []byte) {
 		return
 	}
 
-	qJob := shared.QueueJob{
-		Type:       shared.QueueJobTypeReply,
+	qJob := domain.QueueJob{
+		Type:       domain.QueueJobTypeReply,
 		JobID:      replyJob.ID,
 		ProjectID:  projectID,
 		EnqueuedAt: time.Now(),

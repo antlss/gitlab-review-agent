@@ -15,7 +15,7 @@ import (
 
 	"log/slog"
 
-	"github.com/antlss/gitlab-review-agent/internal/shared"
+	"github.com/antlss/gitlab-review-agent/internal/domain"
 )
 
 const (
@@ -142,7 +142,7 @@ func (m *Manager) SHAExists(ctx context.Context, projectID int64, sha string) bo
 }
 
 // Diff returns diff files between base and head.
-func (m *Manager) Diff(ctx context.Context, projectID int64, baseSHA, headSHA string) ([]shared.DiffFile, error) {
+func (m *Manager) Diff(ctx context.Context, projectID int64, baseSHA, headSHA string) ([]domain.DiffFile, error) {
 	repoPath := m.RepoPath(projectID)
 
 	// name-status
@@ -192,7 +192,7 @@ func (m *Manager) Diff(ctx context.Context, projectID int64, baseSHA, headSHA st
 		statMap[path] = [2]int{added, removed}
 	}
 
-	var files []shared.DiffFile
+	var files []domain.DiffFile
 	for path, status := range statusMap {
 		stats := statMap[path]
 		oldPath := path
@@ -202,7 +202,7 @@ func (m *Manager) Diff(ctx context.Context, projectID int64, baseSHA, headSHA st
 
 		addedLines, _ := m.getAddedLines(ctx, repoPath, baseSHA, headSHA, path)
 
-		files = append(files, shared.DiffFile{
+		files = append(files, domain.DiffFile{
 			Path:         path,
 			OldPath:      oldPath,
 			Status:       status,

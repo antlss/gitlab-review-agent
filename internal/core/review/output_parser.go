@@ -6,7 +6,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/antlss/gitlab-review-agent/internal/shared"
+	"github.com/antlss/gitlab-review-agent/internal/domain"
 )
 
 type ParsedOutput struct {
@@ -107,9 +107,9 @@ func parseJSONScan(s string) (*ParsedOutput, error) {
 // ValidateAndFilter validates parsed comments against diff files and filters duplicates.
 func ValidateAndFilter(
 	parsed *ParsedOutput,
-	diffFiles []shared.DiffFile,
-	existingComments []shared.ExistingComment,
-) []shared.ParsedComment {
+	diffFiles []domain.DiffFile,
+	existingComments []domain.ExistingComment,
+) []domain.ParsedComment {
 	addedLinesMap := make(map[string]map[int]bool)
 	for _, f := range diffFiles {
 		lines := make(map[int]bool)
@@ -130,39 +130,39 @@ func ValidateAndFilter(
 		"performance": true, "naming": true, "style": true,
 	}
 
-	validSeverities := map[string]shared.CommentSeverity{
-		"critical": shared.SeverityCritical,
-		"high":     shared.SeverityHigh,
-		"medium":   shared.SeverityMedium,
-		"low":      shared.SeverityLow,
+	validSeverities := map[string]domain.CommentSeverity{
+		"critical": domain.SeverityCritical,
+		"high":     domain.SeverityHigh,
+		"medium":   domain.SeverityMedium,
+		"low":      domain.SeverityLow,
 	}
 
-	var results []shared.ParsedComment
+	var results []domain.ParsedComment
 	seen := make(map[string]bool)
 
 	for _, r := range parsed.Reviews {
-		comment := shared.ParsedComment{
+		comment := domain.ParsedComment{
 			FilePath:      r.FilePath,
 			LineNumber:    r.LineNumber,
 			ReviewComment: r.ReviewComment,
 			Confidence:    strings.ToUpper(r.Confidence),
-			Category:      shared.CommentCategory(strings.ToLower(r.Category)),
-			Severity:      shared.CommentSeverity(strings.ToLower(r.Severity)),
+			Category:      domain.CommentCategory(strings.ToLower(r.Category)),
+			Severity:      domain.CommentSeverity(strings.ToLower(r.Severity)),
 			Suggestion:    r.Suggestion,
 		}
 
 		if !validCategories[string(comment.Category)] {
-			comment.Category = shared.CategoryLogic
+			comment.Category = domain.CategoryLogic
 		}
 
 		if _, ok := validSeverities[string(comment.Severity)]; !ok {
 			switch comment.Confidence {
 			case "HIGH":
-				comment.Severity = shared.SeverityHigh
+				comment.Severity = domain.SeverityHigh
 			case "LOW":
-				comment.Severity = shared.SeverityLow
+				comment.Severity = domain.SeverityLow
 			default:
-				comment.Severity = shared.SeverityMedium
+				comment.Severity = domain.SeverityMedium
 			}
 		}
 

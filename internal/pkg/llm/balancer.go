@@ -10,7 +10,7 @@ import (
 
 	"golang.org/x/sync/semaphore"
 
-	"github.com/antlss/gitlab-review-agent/internal/shared"
+	"github.com/antlss/gitlab-review-agent/internal/domain"
 )
 
 const (
@@ -42,14 +42,14 @@ type BalancedClient struct {
 }
 
 type clientEntry struct {
-	client   shared.LLMClient
+	client   domain.LLMClient
 	inFlight atomic.Int64
 	total    atomic.Int64
 }
 
 // NewBalancedClient creates a load-balanced wrapper around multiple LLM clients.
 // All clients must use the same model — the balancer only distributes API key load.
-func NewBalancedClient(clients []shared.LLMClient) (*BalancedClient, error) {
+func NewBalancedClient(clients []domain.LLMClient) (*BalancedClient, error) {
 	if len(clients) == 0 {
 		return nil, fmt.Errorf("at least one LLM client is required")
 	}
@@ -95,7 +95,7 @@ func (b *BalancedClient) pick(tried []bool) (*clientEntry, int) {
 	return &b.clients[best], best
 }
 
-func (b *BalancedClient) Chat(ctx context.Context, req shared.ChatRequest) (*shared.ChatResponse, error) {
+func (b *BalancedClient) Chat(ctx context.Context, req domain.ChatRequest) (*domain.ChatResponse, error) {
 	// Acquire a global concurrency slot before doing anything.
 	// This queues callers when all slots are occupied rather than letting
 	// them pile up and hit rate limits simultaneously.

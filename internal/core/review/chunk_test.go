@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/antlss/gitlab-review-agent/internal/shared"
+	"github.com/antlss/gitlab-review-agent/internal/domain"
 )
 
 func TestChunkFiles_SmallMR(t *testing.T) {
@@ -62,9 +62,9 @@ func TestChunkFiles_Empty(t *testing.T) {
 
 func TestChunkFiles_LargeGroup(t *testing.T) {
 	// 15 files in same domain with target 5 → should split into 3 chunks
-	var files []shared.DiffFile
+	var files []domain.DiffFile
 	for i := 0; i < 15; i++ {
-		files = append(files, shared.DiffFile{
+		files = append(files, domain.DiffFile{
 			Path:      fmt.Sprintf("domains/big/biz/file_%d.go", i),
 			RiskScore: 10,
 		})
@@ -121,10 +121,10 @@ func TestCalculateBudgetWithPreload(t *testing.T) {
 	}
 }
 
-func makeDiffFiles(paths ...string) []shared.DiffFile {
-	files := make([]shared.DiffFile, len(paths))
+func makeDiffFiles(paths ...string) []domain.DiffFile {
+	files := make([]domain.DiffFile, len(paths))
 	for i, p := range paths {
-		files[i] = shared.DiffFile{
+		files[i] = domain.DiffFile{
 			Path:      p,
 			RiskScore: float64(len(paths) - i), // descending risk
 		}

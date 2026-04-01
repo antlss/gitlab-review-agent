@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/antlss/gitlab-review-agent/internal/shared"
+	"github.com/antlss/gitlab-review-agent/internal/domain"
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
@@ -22,7 +22,7 @@ func NewReviewJobStore(db *sqlx.DB) *ReviewJobStore {
 	return &ReviewJobStore{db: db}
 }
 
-func (s *ReviewJobStore) Create(ctx context.Context, job *shared.ReviewJob) error {
+func (s *ReviewJobStore) Create(ctx context.Context, job *domain.ReviewJob) error {
 	if job.ID == (uuid.UUID{}) {
 		return fmt.Errorf("review job ID must be set before calling Create")
 	}
@@ -53,8 +53,8 @@ func (s *ReviewJobStore) Create(ctx context.Context, job *shared.ReviewJob) erro
 	return nil
 }
 
-func (s *ReviewJobStore) GetByID(ctx context.Context, id uuid.UUID) (*shared.ReviewJob, error) {
-	var job shared.ReviewJob
+func (s *ReviewJobStore) GetByID(ctx context.Context, id uuid.UUID) (*domain.ReviewJob, error) {
+	var job domain.ReviewJob
 	err := s.db.GetContext(ctx, &job,
 		`SELECT * FROM review_jobs WHERE id = $1`, id)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -66,13 +66,13 @@ func (s *ReviewJobStore) GetByID(ctx context.Context, id uuid.UUID) (*shared.Rev
 	return &job, nil
 }
 
-func (s *ReviewJobStore) UpdateStatus(ctx context.Context, id uuid.UUID, status shared.ReviewJobStatus, errMsg *string) error {
+func (s *ReviewJobStore) UpdateStatus(ctx context.Context, id uuid.UUID, status domain.ReviewJobStatus, errMsg *string) error {
 	query := `UPDATE review_jobs SET status = $1, error_message = $2, updated_at = NOW()`
-	if status == shared.ReviewJobStatusReviewing {
+	if status == domain.ReviewJobStatusReviewing {
 		query += `, started_at = NOW()`
 	}
-	if status == shared.ReviewJobStatusCompleted || status == shared.ReviewJobStatusFailed ||
-		status == shared.ReviewJobStatusParseFailed || status == shared.ReviewJobStatusSkippedSize {
+	if status == domain.ReviewJobStatusCompleted || status == domain.ReviewJobStatusFailed ||
+		status == domain.ReviewJobStatusParseFailed || status == domain.ReviewJobStatusSkippedSize {
 		query += `, completed_at = NOW()`
 	}
 	query += ` WHERE id = $3`
@@ -93,7 +93,7 @@ func (s *ReviewJobStore) UpdateBaseSHA(ctx context.Context, id uuid.UUID, baseSH
 	return nil
 }
 
-func (s *ReviewJobStore) UpdateAIOutput(ctx context.Context, id uuid.UUID, raw string, parsed []shared.ParsedComment, iterations, tokens int) error {
+func (s *ReviewJobStore) UpdateAIOutput(ctx context.Context, id uuid.UUID, raw string, parsed []domain.ParsedComment, iterations, tokens int) error {
 	parsedJSON, err := json.Marshal(parsed)
 	if err != nil {
 		return fmt.Errorf("marshal parsed comments: %w", err)
@@ -117,7 +117,7 @@ func (s *ReviewJobStore) UpdateCompleted(ctx context.Context, id uuid.UUID, post
 			status = $1, total_comments_posted = $2, total_comments_suppressed = $3,
 			completed_at = NOW(), updated_at = NOW()
 		WHERE id = $4`,
-		shared.ReviewJobStatusCompleted, posted, suppressed, id)
+		domain.ReviewJobStatusCompleted, posted, suppressed, id)
 	if err != nil {
 		return fmt.Errorf("update completed: %w", err)
 	}
@@ -149,21 +149,21 @@ func (s *ReviewJobStore) ExistsPendingOrCompleted(ctx context.Context, projectID
 	return exists, nil
 }
 
-func (s *ReviewJobStore) ListStale(ctx context.Context, olderThanMinutes int) ([]*shared.ReviewJob, error) {
-	var jobs []*shared.ReviewJob
+func (s *ReviewJobStore) ListStale(ctx context.Context, olderThanMinutes int) ([]*domain.ReviewJob, error) {
+	var jobs []*domain.ReviewJob
 	err := s.db.SelectContext(ctx, &jobs, `
 		SELECT * FROM review_jobs
 		WHERE status = $1
 		AND started_at < NOW() - make_interval(mins := $2)`,
-		shared.ReviewJobStatusReviewing, olderThanMinutes)
+		domain.ReviewJobStatusReviewing, olderThanMinutes)
 	if err != nil {
 		return nil, fmt.Errorf("list stale jobs: %w", err)
 	}
 	return jobs, nil
 }
 
-func (s *ReviewJobStore) ListByProject(ctx context.Context, projectID int64, limit int) ([]*shared.ReviewJob, error) {
-	var jobs []*shared.ReviewJob
+func (s *ReviewJobStore) ListByProject(ctx context.Context, projectID int64, limit int) ([]*domain.ReviewJob, error) {
+	var jobs []*domain.ReviewJob
 	err := s.db.SelectContext(ctx, &jobs,
 		`SELECT * FROM review_jobs WHERE gitlab_project_id = $1 ORDER BY created_at DESC LIMIT $2`,
 		projectID, limit)

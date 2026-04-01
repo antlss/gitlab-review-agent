@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/antlss/gitlab-review-agent/internal/shared"
+	"github.com/antlss/gitlab-review-agent/internal/domain"
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
@@ -21,8 +21,8 @@ func NewRepositorySettingsStore(db *sqlx.DB) *RepositorySettingsStore {
 	return &RepositorySettingsStore{db: db}
 }
 
-func (s *RepositorySettingsStore) GetByProjectID(ctx context.Context, projectID int64) (*shared.RepositorySettings, error) {
-	var rs shared.RepositorySettings
+func (s *RepositorySettingsStore) GetByProjectID(ctx context.Context, projectID int64) (*domain.RepositorySettings, error) {
+	var rs domain.RepositorySettings
 	err := s.db.GetContext(ctx, &rs,
 		`SELECT * FROM repository_settings WHERE gitlab_project_id = ?`, projectID)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -34,7 +34,7 @@ func (s *RepositorySettingsStore) GetByProjectID(ctx context.Context, projectID 
 	return &rs, nil
 }
 
-func (s *RepositorySettingsStore) GetOrCreate(ctx context.Context, projectID int64, projectPath string) (*shared.RepositorySettings, error) {
+func (s *RepositorySettingsStore) GetOrCreate(ctx context.Context, projectID int64, projectPath string) (*domain.RepositorySettings, error) {
 	existing, err := s.GetByProjectID(ctx, projectID)
 	if err != nil {
 		return nil, err
@@ -44,7 +44,7 @@ func (s *RepositorySettingsStore) GetOrCreate(ctx context.Context, projectID int
 	}
 
 	now := time.Now()
-	settings := &shared.RepositorySettings{
+	settings := &domain.RepositorySettings{
 		ID:              uuid.New(),
 		GitLabProjectID: projectID,
 		ProjectPath:     projectPath,
@@ -66,7 +66,7 @@ func (s *RepositorySettingsStore) GetOrCreate(ctx context.Context, projectID int
 	return s.GetByProjectID(ctx, projectID)
 }
 
-func (s *RepositorySettingsStore) Upsert(ctx context.Context, settings *shared.RepositorySettings) error {
+func (s *RepositorySettingsStore) Upsert(ctx context.Context, settings *domain.RepositorySettings) error {
 	now := time.Now()
 	if settings.ID == (uuid.UUID{}) {
 		settings.ID = uuid.New()
@@ -121,8 +121,8 @@ func (s *RepositorySettingsStore) UpdateCustomPrompt(ctx context.Context, projec
 	return nil
 }
 
-func (s *RepositorySettingsStore) ListEnabled(ctx context.Context) ([]*shared.RepositorySettings, error) {
-	var results []*shared.RepositorySettings
+func (s *RepositorySettingsStore) ListEnabled(ctx context.Context) ([]*domain.RepositorySettings, error) {
+	var results []*domain.RepositorySettings
 	err := s.db.SelectContext(ctx, &results,
 		`SELECT * FROM repository_settings WHERE is_archived = 0`)
 	if err != nil {

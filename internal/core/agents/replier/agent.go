@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/antlss/gitlab-review-agent/internal/core/prompt"
-	"github.com/antlss/gitlab-review-agent/internal/shared"
+	"github.com/antlss/gitlab-review-agent/internal/domain"
 )
 
 const (
@@ -22,27 +22,27 @@ func NewAgent() *Agent {
 }
 
 type ReplyInput struct {
-	Job              *shared.ReplyJob
-	MR               *shared.GitLabMR
+	Job              *domain.ReplyJob
+	MR               *domain.GitLabMR
 	ThreadHistory    string
 	CodeContext      string
 	LatestCodeContext string
 	CustomPrompt     *string
-	Intent           shared.ReplyIntent
+	Intent           domain.ReplyIntent
 	DetectedLang     string
 	ResponseLanguage prompt.ResponseLanguage
 }
 
 // GenerateReply makes a single LLM call to generate a reply.
-func (a *Agent) GenerateReply(ctx context.Context, llmClient shared.LLMClient, input ReplyInput) (string, error) {
+func (a *Agent) GenerateReply(ctx context.Context, llmClient domain.LLMClient, input ReplyInput) (string, error) {
 	systemPrompt := a.buildSystemPrompt(input)
 	userMessage := a.buildUserMessage(input)
 
-	req := shared.ChatRequest{
+	req := domain.ChatRequest{
 		Model:       llmClient.ModelName(),
 		MaxTokens:   replyMaxTokens,
 		Temperature: replyTemperature,
-		Messages: []shared.ChatMessage{
+		Messages: []domain.ChatMessage{
 			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: userMessage},
 		},

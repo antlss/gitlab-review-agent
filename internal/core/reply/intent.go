@@ -1,37 +1,37 @@
 package reply
 
 import (
-	"github.com/antlss/gitlab-review-agent/internal/shared"
+	"github.com/antlss/gitlab-review-agent/internal/domain"
 	"strings"
 )
 
-var intentKeywords = map[shared.ReplyIntent][]string{
-	shared.IntentReject: {
+var intentKeywords = map[domain.ReplyIntent][]string{
+	domain.IntentReject: {
 		"false positive", "intentional", "not an issue", "by design", "disagree",
 		"won't fix", "incorrect", "wrong", "sai",
 	},
-	shared.IntentQuestion: {
+	domain.IntentQuestion: {
 		"why", "how", "what", "explain", "?",
 	},
-	shared.IntentDiscuss: {
+	domain.IntentDiscuss: {
 		"what about", "how about", "alternatively", "instead",
 	},
-	shared.IntentAgree: {
+	domain.IntentAgree: {
 		"fixed", "done", "agree", "good catch", "will fix", "ok", "thanks", "thank you",
 	},
-	shared.IntentAcknowledge: {
+	domain.IntentAcknowledge: {
 		"noted", "ack", "will address later",
 	},
 }
 
 // ClassifyIntent determines the intent of a user's reply based on keyword matching.
-func ClassifyIntent(text string) shared.ReplyIntent {
+func ClassifyIntent(text string) domain.ReplyIntent {
 	lower := strings.ToLower(text)
 
 	// Priority order
-	for _, intent := range []shared.ReplyIntent{
-		shared.IntentReject, shared.IntentQuestion, shared.IntentDiscuss,
-		shared.IntentAgree, shared.IntentAcknowledge,
+	for _, intent := range []domain.ReplyIntent{
+		domain.IntentReject, domain.IntentQuestion, domain.IntentDiscuss,
+		domain.IntentAgree, domain.IntentAcknowledge,
 	} {
 		for _, kw := range intentKeywords[intent] {
 			if strings.Contains(lower, kw) {
@@ -39,17 +39,17 @@ func ClassifyIntent(text string) shared.ReplyIntent {
 			}
 		}
 	}
-	return shared.IntentAcknowledge
+	return domain.IntentAcknowledge
 }
 
 // IntentToSignal maps a reply intent to a feedback signal.
-func IntentToSignal(intent shared.ReplyIntent) shared.FeedbackSignal {
+func IntentToSignal(intent domain.ReplyIntent) domain.FeedbackSignal {
 	switch intent {
-	case shared.IntentAgree, shared.IntentAcknowledge:
-		return shared.FeedbackSignalAccepted
-	case shared.IntentReject:
-		return shared.FeedbackSignalRejected
+	case domain.IntentAgree, domain.IntentAcknowledge:
+		return domain.FeedbackSignalAccepted
+	case domain.IntentReject:
+		return domain.FeedbackSignalRejected
 	default:
-		return shared.FeedbackSignalNeutral
+		return domain.FeedbackSignalNeutral
 	}
 }

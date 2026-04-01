@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/antlss/gitlab-review-agent/internal/shared"
+	"github.com/antlss/gitlab-review-agent/internal/domain"
 )
 
 type AnthropicClient struct {
@@ -33,7 +33,7 @@ func (c *AnthropicClient) ModelName() string      { return c.model }
 func (c *AnthropicClient) ContextWindowSize() int { return c.contextWindow }
 func (c *AnthropicClient) ClientCount() int       { return 1 }
 
-func (c *AnthropicClient) Chat(ctx context.Context, req shared.ChatRequest) (*shared.ChatResponse, error) {
+func (c *AnthropicClient) Chat(ctx context.Context, req domain.ChatRequest) (*domain.ChatResponse, error) {
 	// Build request body
 	var systemContent string
 	var messages []map[string]any
@@ -144,9 +144,9 @@ func (c *AnthropicClient) Chat(ctx context.Context, req shared.ChatRequest) (*sh
 		return nil, fmt.Errorf("unmarshal response: %w", err)
 	}
 
-	result := &shared.ChatResponse{
+	result := &domain.ChatResponse{
 		StopReason: apiResp.StopReason,
-		Usage: shared.TokenUsage{
+		Usage: domain.TokenUsage{
 			InputTokens:  apiResp.Usage.InputTokens,
 			OutputTokens: apiResp.Usage.OutputTokens,
 		},
@@ -157,7 +157,7 @@ func (c *AnthropicClient) Chat(ctx context.Context, req shared.ChatRequest) (*sh
 		case "text":
 			result.Content += block.Text
 		case "tool_use":
-			result.ToolCalls = append(result.ToolCalls, shared.ToolCall{
+			result.ToolCalls = append(result.ToolCalls, domain.ToolCall{
 				ID:        block.ID,
 				Name:      block.Name,
 				InputJSON: string(block.Input),

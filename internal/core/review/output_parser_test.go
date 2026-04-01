@@ -3,7 +3,7 @@ package review
 import (
 	"testing"
 
-	"github.com/antlss/gitlab-review-agent/internal/shared"
+	"github.com/antlss/gitlab-review-agent/internal/domain"
 )
 
 func TestParseDirectJSON(t *testing.T) {
@@ -81,7 +81,7 @@ func TestValidateAndFilter(t *testing.T) {
 		},
 	}
 
-	diffFiles := []shared.DiffFile{
+	diffFiles := []domain.DiffFile{
 		{Path: "a.go", AddedLines: []int{10, 11, 12, 20, 21}},
 	}
 

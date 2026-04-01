@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/antlss/gitlab-review-agent/internal/shared"
+	"github.com/antlss/gitlab-review-agent/internal/domain"
 
 	"github.com/google/uuid"
 )
@@ -27,7 +27,7 @@ func replyJobFilename(id uuid.UUID) string {
 	return id.String() + ".json"
 }
 
-func (s *ReplyJobStore) Create(_ context.Context, job *shared.ReplyJob) error {
+func (s *ReplyJobStore) Create(_ context.Context, job *domain.ReplyJob) error {
 	if job.ID == (uuid.UUID{}) {
 		return fmt.Errorf("reply job ID must be set before calling Create")
 	}
@@ -43,11 +43,11 @@ func (s *ReplyJobStore) Create(_ context.Context, job *shared.ReplyJob) error {
 	return s.b.writeJSON(replyJobFilename(job.ID), job)
 }
 
-func (s *ReplyJobStore) GetByID(_ context.Context, id uuid.UUID) (*shared.ReplyJob, error) {
+func (s *ReplyJobStore) GetByID(_ context.Context, id uuid.UUID) (*domain.ReplyJob, error) {
 	s.b.mu.RLock()
 	defer s.b.mu.RUnlock()
 
-	var job shared.ReplyJob
+	var job domain.ReplyJob
 	err := s.b.readJSON(replyJobFilename(id), &job)
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -58,12 +58,12 @@ func (s *ReplyJobStore) GetByID(_ context.Context, id uuid.UUID) (*shared.ReplyJ
 	return &job, nil
 }
 
-func (s *ReplyJobStore) updateJob(id uuid.UUID, fn func(*shared.ReplyJob)) error {
+func (s *ReplyJobStore) updateJob(id uuid.UUID, fn func(*domain.ReplyJob)) error {
 	s.b.mu.Lock()
 	defer s.b.mu.Unlock()
 
 	fname := replyJobFilename(id)
-	var job shared.ReplyJob
+	var job domain.ReplyJob
 	if err := s.b.readJSON(fname, &job); err != nil {
 		return fmt.Errorf("read reply job for update: %w", err)
 	}
@@ -72,23 +72,23 @@ func (s *ReplyJobStore) updateJob(id uuid.UUID, fn func(*shared.ReplyJob)) error
 	return s.b.writeJSON(fname, &job)
 }
 
-func (s *ReplyJobStore) UpdateStatus(_ context.Context, id uuid.UUID, status shared.ReplyJobStatus, errMsg *string) error {
-	return s.updateJob(id, func(job *shared.ReplyJob) {
+func (s *ReplyJobStore) UpdateStatus(_ context.Context, id uuid.UUID, status domain.ReplyJobStatus, errMsg *string) error {
+	return s.updateJob(id, func(job *domain.ReplyJob) {
 		job.Status = status
 		job.ErrorMessage = errMsg
 		now := time.Now()
-		if status == shared.ReplyJobStatusProcessing {
+		if status == domain.ReplyJobStatusProcessing {
 			job.StartedAt = &now
 		}
-		if status == shared.ReplyJobStatusCompleted || status == shared.ReplyJobStatusFailed {
+		if status == domain.ReplyJobStatusCompleted || status == domain.ReplyJobStatusFailed {
 			job.CompletedAt = &now
 		}
 	})
 }
 
-func (s *ReplyJobStore) UpdateCompleted(_ context.Context, id uuid.UUID, reply string, intent shared.ReplyIntent, signal shared.FeedbackSignal) error {
-	return s.updateJob(id, func(job *shared.ReplyJob) {
-		job.Status = shared.ReplyJobStatusCompleted
+func (s *ReplyJobStore) UpdateCompleted(_ context.Context, id uuid.UUID, reply string, intent domain.ReplyIntent, signal domain.FeedbackSignal) error {
+	return s.updateJob(id, func(job *domain.ReplyJob) {
+		job.Status = domain.ReplyJobStatusCompleted
 		job.ReplyContent = &reply
 		job.IntentClassified = &intent
 		job.FeedbackSignal = &signal

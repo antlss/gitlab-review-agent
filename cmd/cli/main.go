@@ -15,18 +15,19 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
+	"github.com/samber/do/v2"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/semaphore"
 
 	"github.com/antlss/gitlab-review-agent/internal/config"
-	"github.com/antlss/gitlab-review-agent/internal/core/agents/reviewer"
 	"github.com/antlss/gitlab-review-agent/internal/core/prompt"
 	"github.com/antlss/gitlab-review-agent/internal/core/review"
+	"github.com/antlss/gitlab-review-agent/internal/di"
+	"github.com/antlss/gitlab-review-agent/internal/domain"
 	"github.com/antlss/gitlab-review-agent/internal/pkg/git"
 	"github.com/antlss/gitlab-review-agent/internal/pkg/gitlab"
 	"github.com/antlss/gitlab-review-agent/internal/pkg/logger"
 	"github.com/antlss/gitlab-review-agent/internal/pkg/store"
-	"github.com/antlss/gitlab-review-agent/internal/shared"
 )
 
 func main() {
@@ -54,21 +55,19 @@ func reviewCmd() *cobra.Command {
 		Use:   "review",
 		Short: "Review a merge request with interactive comment selection",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load()
-			if err != nil {
-				return fmt.Errorf("config: %w", err)
-			}
-			logger.Setup(cfg.Log.Level, cfg.Log.Format)
+			injector := do.New(
+				di.ConfigPackage,
+				di.InfraPackage,
+				di.CorePackage,
+			)
 
-			stores, err := store.New(cfg.Store)
-			if err != nil {
-				return fmt.Errorf("store: %w", err)
-			}
+			cfg := do.MustInvoke[*config.Config](injector)
+			stores := do.MustInvoke[*store.Stores](injector)
 			defer stores.Close()
 
 			ctx := context.Background()
 
-			gitlabClient := gitlab.NewClient(cfg.GitLab.BaseURL, cfg.GitLab.Token)
+			gitlabClient := do.MustInvoke[domain.GitLabClient](injector)
 			project, err := gitlabClient.GetProject(ctx, projectID)
 			if err != nil {
 				return fmt.Errorf("fetch project info: %w", err)
@@ -83,15 +82,15 @@ func reviewCmd() *cobra.Command {
 				return fmt.Errorf("get or create repo settings: %w", err)
 			}
 
-			job := &shared.ReviewJob{
+			job := &domain.ReviewJob{
 				ID:                uuid.New(),
 				GitLabProjectID:   projectID,
 				MrIID:             mrID,
 				HeadSHA:           mr.HeadSHA,
 				TargetBranch:      mr.TargetBranch,
 				SourceBranch:      mr.SourceBranch,
-				TriggerSource:     shared.TriggerSourceCLI,
-				Status:            shared.ReviewJobStatusPending,
+				TriggerSource:     domain.TriggerSourceCLI,
+				Status:            domain.ReviewJobStatusPending,
 				DryRun:            true,
 				RepoModelOverride: settings.ModelOverride,
 				RepoLanguage:      settings.Language,
@@ -111,21 +110,7 @@ func reviewCmd() *cobra.Command {
 			fmt.Printf("MR: %s !%d (%s → %s)\n", project.PathWithNS, mrID, mr.SourceBranch, mr.TargetBranch)
 			fmt.Println("Running review pipeline...")
 
-			gitManager := git.NewManager(cfg.Git.ReposDir, cfg.GitLab.BaseURL, cfg.GitLab.Token)
-			gatherer := review.NewContextGatherer(gitlabClient, stores.RepoSettings, stores.Feedbacks, cfg.GitLab.BotUserID)
-			reviewAgent := reviewer.NewAgent()
-
-			reviewPipeline := review.NewPipeline(review.PipelineDeps{
-				Config:        *cfg,
-				JobStore:      stores.ReviewJobs,
-				RepoSettings:  stores.RepoSettings,
-				RecordStore:   stores.ReviewRecords,
-				FeedbackStore: stores.Feedbacks,
-				GitLabClient:  gitlabClient,
-				GitManager:    gitManager,
-				Gatherer:      gatherer,
-				Agent:         reviewAgent,
-			})
+			reviewPipeline := do.MustInvoke[*review.Pipeline](injector)
 
 			if err := reviewPipeline.Execute(ctx, job); err != nil {
 				fmt.Printf("\nPipeline failed: %v\n", err)
@@ -138,15 +123,15 @@ func reviewCmd() *cobra.Command {
 			}
 
 			switch updatedJob.Status {
-			case shared.ReviewJobStatusFailed, shared.ReviewJobStatusParseFailed:
-				fmt.Printf("\nFailed: %s\n", shared.DerefStr(updatedJob.ErrorMessage))
+			case domain.ReviewJobStatusFailed, domain.ReviewJobStatusParseFailed:
+				fmt.Printf("\nFailed: %s\n", domain.DerefStr(updatedJob.ErrorMessage))
 				return nil
-			case shared.ReviewJobStatusSkippedSize:
+			case domain.ReviewJobStatusSkippedSize:
 				fmt.Printf("\nSkipped: %s\n", updatedJob.Status)
 				return nil
 			}
 
-			var comments []shared.ParsedComment
+			var comments []domain.ParsedComment
 			if len(updatedJob.AIOutputParsed) > 0 {
 				if err := json.Unmarshal(updatedJob.AIOutputParsed, &comments); err != nil {
 					fmt.Printf("\nFailed to parse comments: %v\n", err)
@@ -154,7 +139,7 @@ func reviewCmd() *cobra.Command {
 				}
 			}
 
-			var actionable []shared.ParsedComment
+			var actionable []domain.ParsedComment
 			suppressed := 0
 			for _, c := range comments {
 				if c.Suppressed {
@@ -215,7 +200,7 @@ func reviewCmd() *cobra.Command {
 				return nil
 			}
 
-			baseSHA := shared.DerefStr(updatedJob.BaseSHA)
+			baseSHA := domain.DerefStr(updatedJob.BaseSHA)
 			if baseSHA == "" {
 				fmt.Println("Error: base SHA not available")
 				return nil
@@ -227,7 +212,7 @@ func reviewCmd() *cobra.Command {
 			for _, idx := range selectedIndices {
 				c := &actionable[idx]
 				body := review.FormatComment(c, lang)
-				resp, err := gitlabClient.PostInlineComment(ctx, shared.PostInlineCommentRequest{
+				resp, err := gitlabClient.PostInlineComment(ctx, domain.PostInlineCommentRequest{
 					ProjectID: projectID,
 					MrIID:     mrID,
 					Body:      body,
@@ -242,7 +227,7 @@ func reviewCmd() *cobra.Command {
 					continue
 				}
 
-				fb := &shared.ReviewFeedback{
+				fb := &domain.ReviewFeedback{
 					GitLabProjectID:    projectID,
 					ReviewJobID:        &updatedJob.ID,
 					GitLabDiscussionID: resp.DiscussionID,
@@ -250,7 +235,7 @@ func reviewCmd() *cobra.Command {
 					FilePath:           &c.FilePath,
 					LineNumber:         &c.LineNumber,
 					Category:           &c.Category,
-					CommentSummary:     shared.StrPtr(shared.Truncate(c.ReviewComment, 200)),
+					CommentSummary:     domain.StrPtr(domain.Truncate(c.ReviewComment, 200)),
 				}
 				stores.Feedbacks.Create(ctx, fb)
 
@@ -337,7 +322,6 @@ Access levels: 10=guest, 20=reporter, 30=developer, 40=maintainer, 50=owner`,
 				go func(p gitlab.ProjectBasic) {
 					defer wg.Done()
 
-					// Acquire semaphore slot (respect global ctx for shutdown)
 					if acquireErr := sem.Acquire(ctx, 1); acquireErr != nil {
 						nFailed.Add(1)
 						fmt.Printf("  [FAIL] %s: %v\n", p.PathWithNamespace, acquireErr)
@@ -345,7 +329,6 @@ Access levels: 10=guest, 20=reporter, 30=developer, 40=maintainer, 50=owner`,
 					}
 					defer sem.Release(1)
 
-					// Skip-existing: don't even fetch if .git already present
 					if skipExisting {
 						gitDir := filepath.Join(gitManager.RepoPath(p.ID), ".git")
 						if _, statErr := os.Stat(gitDir); statErr == nil {
@@ -380,7 +363,6 @@ Access levels: 10=guest, 20=reporter, 30=developer, 40=maintainer, 50=owner`,
 
 			wg.Wait()
 
-			// ── Summary ──────────────────────────────────────────────────────────
 			fmt.Println()
 			fmt.Println(strings.Repeat("─", 60))
 			fmt.Printf("Done. cloned=%d  fetched=%d  skipped=%d  failed=%d\n",
@@ -407,7 +389,7 @@ Access levels: 10=guest, 20=reporter, 30=developer, 40=maintainer, 50=owner`,
 	return cmd
 }
 
-func printComment(index int, c *shared.ParsedComment) {
+func printComment(index int, c *domain.ParsedComment) {
 	fmt.Printf("\n[%d] %s:%d\n", index, c.FilePath, c.LineNumber)
 	fmt.Printf("    Severity: %-8s  Category: %s  Confidence: %s\n",
 		strings.ToUpper(string(c.Severity)), strings.ToUpper(string(c.Category)), c.Confidence)
@@ -440,8 +422,6 @@ func wrapText(text string, width int) string {
 	return sb.String()
 }
 
-
-// parseSelection parses input like "1,3,5" or "1-3,5" or "2-4" into 0-based indices.
 func parseSelection(input string, max int) ([]int, error) {
 	seen := make(map[int]bool)
 	var result []int

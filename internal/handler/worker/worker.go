@@ -9,45 +9,45 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/antlss/gitlab-review-agent/internal/pkg/queue"
-	"github.com/antlss/gitlab-review-agent/internal/shared"
+	"github.com/antlss/gitlab-review-agent/internal/domain"
 )
 
 // ReviewPipelineExecutor is called for review jobs.
 type ReviewPipelineExecutor interface {
-	Execute(ctx context.Context, job *shared.ReviewJob) error
+	Execute(ctx context.Context, job *domain.ReviewJob) error
 }
 
 // ReplyPipelineExecutor is called for reply jobs.
 type ReplyPipelineExecutor interface {
-	Execute(ctx context.Context, job *shared.ReplyJob) error
+	Execute(ctx context.Context, job *domain.ReplyJob) error
 }
 
-type WorkerDeps struct {
+type PoolDeps struct {
 	Queue          *queue.Queue
 	ReviewPipeline ReviewPipelineExecutor
 	ReplyPipeline  ReplyPipelineExecutor
-	ReviewJobStore shared.ReviewJobStore
-	ReplyJobStore  shared.ReplyJobStore
+	ReviewJobStore domain.ReviewJobStore
+	ReplyJobStore  domain.ReplyJobStore
 }
 
-type Worker struct {
+type runner struct {
 	id             string
 	queue          *queue.Queue
 	reviewPipeline ReviewPipelineExecutor
 	replyPipeline  ReplyPipelineExecutor
-	reviewJobStore shared.ReviewJobStore
-	replyJobStore  shared.ReplyJobStore
+	reviewJobStore domain.ReviewJobStore
+	replyJobStore  domain.ReplyJobStore
 }
 
-type WorkerPool struct {
-	workers []*Worker
+type Pool struct {
+	runners []*runner
 	wg      sync.WaitGroup
 }
 
-func NewWorkerPool(n int, deps WorkerDeps) *WorkerPool {
-	pool := &WorkerPool{}
+func NewPool(n int, deps PoolDeps) *Pool {
+	p := &Pool{}
 	for i := 0; i < n; i++ {
-		worker := &Worker{
+		r := &runner{
 			id:             uuid.New().String(),
 			queue:          deps.Queue,
 			reviewPipeline: deps.ReviewPipeline,
@@ -55,26 +55,26 @@ func NewWorkerPool(n int, deps WorkerDeps) *WorkerPool {
 			reviewJobStore: deps.ReviewJobStore,
 			replyJobStore:  deps.ReplyJobStore,
 		}
-		pool.workers = append(pool.workers, worker)
+		p.runners = append(p.runners, r)
 	}
-	return pool
+	return p
 }
 
-func (p *WorkerPool) Start(ctx context.Context) {
-	for _, w := range p.workers {
+func (p *Pool) Start(ctx context.Context) {
+	for _, r := range p.runners {
 		p.wg.Add(1)
-		go func(w *Worker) {
+		go func(r *runner) {
 			defer p.wg.Done()
-			w.run(ctx)
-		}(w)
+			r.run(ctx)
+		}(r)
 	}
 }
 
-func (p *WorkerPool) Wait() {
+func (p *Pool) Wait() {
 	p.wg.Wait()
 }
 
-func (w *Worker) run(ctx context.Context) {
+func (r *runner) run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -83,7 +83,7 @@ func (w *Worker) run(ctx context.Context) {
 		}
 
 		// GetNextJob blocks until a job is available or ctx is cancelled
-		job, projectID, err := w.queue.GetNextJob(ctx, w.id)
+		job, projectID, err := r.queue.GetNextJob(ctx, r.id)
 		if err != nil {
 			if ctx.Err() != nil {
 				return // shutting down
@@ -96,40 +96,40 @@ func (w *Worker) run(ctx context.Context) {
 			return
 		}
 
-		if err := w.processJob(ctx, job); err != nil {
+		if err := r.processJob(ctx, job); err != nil {
 			slog.Error("job failed",
 				"job_id", job.JobID.String(),
 				"job_type", string(job.Type),
 				"error", err,
 			)
-			_ = w.queue.SendToDLQ(ctx, *job, err.Error())
+			_ = r.queue.SendToDLQ(ctx, *job, err.Error())
 		}
 
-		_ = w.queue.ReleaseLock(ctx, projectID, w.id)
+		_ = r.queue.ReleaseLock(ctx, projectID, r.id)
 	}
 }
 
-func (w *Worker) processJob(ctx context.Context, job *shared.QueueJob) error {
+func (r *runner) processJob(ctx context.Context, job *domain.QueueJob) error {
 	switch job.Type {
-	case shared.QueueJobTypeReview:
-		reviewJob, err := w.reviewJobStore.GetByID(ctx, job.JobID)
+	case domain.QueueJobTypeReview:
+		reviewJob, err := r.reviewJobStore.GetByID(ctx, job.JobID)
 		if err != nil {
 			return fmt.Errorf("load review job: %w", err)
 		}
 		if reviewJob == nil {
 			return fmt.Errorf("review job not found: %s", job.JobID)
 		}
-		return w.reviewPipeline.Execute(ctx, reviewJob)
+		return r.reviewPipeline.Execute(ctx, reviewJob)
 
-	case shared.QueueJobTypeReply:
-		replyJob, err := w.replyJobStore.GetByID(ctx, job.JobID)
+	case domain.QueueJobTypeReply:
+		replyJob, err := r.replyJobStore.GetByID(ctx, job.JobID)
 		if err != nil {
 			return fmt.Errorf("load reply job: %w", err)
 		}
 		if replyJob == nil {
 			return fmt.Errorf("reply job not found: %s", job.JobID)
 		}
-		return w.replyPipeline.Execute(ctx, replyJob)
+		return r.replyPipeline.Execute(ctx, replyJob)
 
 	default:
 		return fmt.Errorf("unknown job type: %s", job.Type)

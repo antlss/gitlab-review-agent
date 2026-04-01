@@ -6,13 +6,13 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/antlss/gitlab-review-agent/internal/shared"
+	"github.com/antlss/gitlab-review-agent/internal/domain"
 )
 
 // ChunkFiles groups diff files by domain/directory and balances into chunks of
 // approximately targetSize files each. Related files (same domain) stay together
 // so the agent can review them with shared context, reducing exploratory tool calls.
-func ChunkFiles(files []shared.DiffFile, targetSize int) [][]shared.DiffFile {
+func ChunkFiles(files []domain.DiffFile, targetSize int) [][]domain.DiffFile {
 	if len(files) == 0 {
 		return nil
 	}
@@ -22,14 +22,14 @@ func ChunkFiles(files []shared.DiffFile, targetSize int) [][]shared.DiffFile {
 
 	// If total files fit in one chunk, return as-is
 	if len(files) <= targetSize {
-		return [][]shared.DiffFile{files}
+		return [][]domain.DiffFile{files}
 	}
 
 	// Group files by top-level domain directory
 	groups := groupByDomain(files)
 
 	// Sort groups by total risk score (highest first) so the riskiest chunks run first
-	slices.SortFunc(groups, func(a, b []shared.DiffFile) int {
+	slices.SortFunc(groups, func(a, b []domain.DiffFile) int {
 		return cmp.Compare(groupRiskScore(b), groupRiskScore(a)) // descending
 	})
 
@@ -40,8 +40,8 @@ func ChunkFiles(files []shared.DiffFile, targetSize int) [][]shared.DiffFile {
 // groupByDomain groups files by their top-level directory (e.g., "domains/partner",
 // "entities", "singleton"). Files in the same domain directory are likely related
 // and benefit from being reviewed together.
-func groupByDomain(files []shared.DiffFile) [][]shared.DiffFile {
-	domainMap := make(map[string][]shared.DiffFile)
+func groupByDomain(files []domain.DiffFile) [][]domain.DiffFile {
+	domainMap := make(map[string][]domain.DiffFile)
 	var order []string
 
 	for _, f := range files {
@@ -52,7 +52,7 @@ func groupByDomain(files []shared.DiffFile) [][]shared.DiffFile {
 		domainMap[key] = append(domainMap[key], f)
 	}
 
-	groups := make([][]shared.DiffFile, 0, len(order))
+	groups := make([][]domain.DiffFile, 0, len(order))
 	for _, key := range order {
 		groups = append(groups, domainMap[key])
 	}
@@ -83,7 +83,7 @@ func domainKey(path string) string {
 	return parts[0]
 }
 
-func groupRiskScore(files []shared.DiffFile) float64 {
+func groupRiskScore(files []domain.DiffFile) float64 {
 	total := 0.0
 	for _, f := range files {
 		total += f.RiskScore
@@ -92,9 +92,9 @@ func groupRiskScore(files []shared.DiffFile) float64 {
 }
 
 // balanceChunks merges small groups and splits large groups to achieve ~targetSize per chunk.
-func balanceChunks(groups [][]shared.DiffFile, targetSize int) [][]shared.DiffFile {
-	var chunks [][]shared.DiffFile
-	var current []shared.DiffFile
+func balanceChunks(groups [][]domain.DiffFile, targetSize int) [][]domain.DiffFile {
+	var chunks [][]domain.DiffFile
+	var current []domain.DiffFile
 
 	for _, group := range groups {
 		// If a single group exceeds target, split it into its own chunks

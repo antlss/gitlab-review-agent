@@ -10,16 +10,16 @@ import (
 	"github.com/antlss/gitlab-review-agent/internal/pkg/store/file"
 	"github.com/antlss/gitlab-review-agent/internal/pkg/store/postgres"
 	"github.com/antlss/gitlab-review-agent/internal/pkg/store/sqlite"
-	"github.com/antlss/gitlab-review-agent/internal/shared"
+	"github.com/antlss/gitlab-review-agent/internal/domain"
 )
 
 // Stores aggregates all store instances and a Close function.
 type Stores struct {
-	RepoSettings  shared.RepositorySettingsStore
-	ReviewJobs    shared.ReviewJobStore
-	ReplyJobs     shared.ReplyJobStore
-	Feedbacks     shared.FeedbackStore
-	ReviewRecords shared.ReviewRecordStore
+	RepoSettings  domain.RepositorySettingsStore
+	ReviewJobs    domain.ReviewJobStore
+	ReplyJobs     domain.ReplyJobStore
+	Feedbacks     domain.FeedbackStore
+	ReviewRecords domain.ReviewRecordStore
 	closer        io.Closer // underlying DB connection (if any)
 }
 

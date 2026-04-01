@@ -9,7 +9,7 @@ import (
 	"sync"
 
 	"github.com/antlss/gitlab-review-agent/internal/config"
-	"github.com/antlss/gitlab-review-agent/internal/shared"
+	"github.com/antlss/gitlab-review-agent/internal/domain"
 )
 
 // NoteAccumulator stores notes saved by the agent during a review session.
@@ -37,21 +37,21 @@ func (n *NoteAccumulator) Summary() string {
 
 type Registry struct {
 	rootPath  string
-	diffFiles []shared.DiffFile
-	tools     map[string]shared.Tool
-	cache     map[string]*shared.ToolResult
+	diffFiles []domain.DiffFile
+	tools     map[string]domain.Tool
+	cache     map[string]*domain.ToolResult
 	cacheMu   sync.RWMutex
 	config    config.ToolConfig
 	Notes     *NoteAccumulator // persistent notes that survive context compression
 }
 
-func NewRegistry(rootPath string, diffFiles []shared.DiffFile, cfg config.ToolConfig) *Registry {
+func NewRegistry(rootPath string, diffFiles []domain.DiffFile, cfg config.ToolConfig) *Registry {
 	acc := &NoteAccumulator{}
 	r := &Registry{
 		rootPath:  rootPath,
 		diffFiles: diffFiles,
-		tools:     make(map[string]shared.Tool),
-		cache:     make(map[string]*shared.ToolResult),
+		tools:     make(map[string]domain.Tool),
+		cache:     make(map[string]*domain.ToolResult),
 		config:    cfg,
 		Notes:     acc,
 	}
@@ -67,15 +67,15 @@ func NewRegistry(rootPath string, diffFiles []shared.DiffFile, cfg config.ToolCo
 	return r
 }
 
-func (r *Registry) Register(tool shared.Tool) {
+func (r *Registry) Register(tool domain.Tool) {
 	r.tools[tool.Name()] = tool
 }
 
 // Definitions returns all tool definitions for the LLM.
-func (r *Registry) Definitions() []shared.ToolDefinition {
-	var defs []shared.ToolDefinition
+func (r *Registry) Definitions() []domain.ToolDefinition {
+	var defs []domain.ToolDefinition
 	for _, t := range r.tools {
-		defs = append(defs, shared.ToolDefinition{
+		defs = append(defs, domain.ToolDefinition{
 			Name:        t.Name(),
 			Description: t.Description(),
 			InputSchema: t.InputSchema(),
@@ -85,11 +85,11 @@ func (r *Registry) Definitions() []shared.ToolDefinition {
 }
 
 // Execute runs a tool by name, with dedup caching.
-func (r *Registry) Execute(ctx context.Context, name string, input shared.ToolInput) (*shared.ToolResult, error) {
+func (r *Registry) Execute(ctx context.Context, name string, input domain.ToolInput) (*domain.ToolResult, error) {
 	tool, ok := r.tools[name]
 	if !ok {
 		errStr := fmt.Sprintf("unknown tool: %s", name)
-		return &shared.ToolResult{Error: &errStr}, nil
+		return &domain.ToolResult{Error: &errStr}, nil
 	}
 
 	// Cache key = sha256(name + json(input))
@@ -116,7 +116,7 @@ func (r *Registry) Execute(ctx context.Context, name string, input shared.ToolIn
 	return result, nil
 }
 
-func (r *Registry) cacheKey(name string, input shared.ToolInput) string {
+func (r *Registry) cacheKey(name string, input domain.ToolInput) string {
 	data, _ := json.Marshal(input)
 	h := sha256.Sum256(append([]byte(name+":"), data...))
 	return fmt.Sprintf("%x", h)

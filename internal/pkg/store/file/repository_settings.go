@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/antlss/gitlab-review-agent/internal/shared"
+	"github.com/antlss/gitlab-review-agent/internal/domain"
 
 	"github.com/google/uuid"
 )
@@ -27,11 +27,11 @@ func filename(projectID int64) string {
 	return fmt.Sprintf("%d.json", projectID)
 }
 
-func (s *RepositorySettingsStore) GetByProjectID(_ context.Context, projectID int64) (*shared.RepositorySettings, error) {
+func (s *RepositorySettingsStore) GetByProjectID(_ context.Context, projectID int64) (*domain.RepositorySettings, error) {
 	s.b.mu.RLock()
 	defer s.b.mu.RUnlock()
 
-	var rs shared.RepositorySettings
+	var rs domain.RepositorySettings
 	err := s.b.readJSON(filename(projectID), &rs)
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -42,12 +42,12 @@ func (s *RepositorySettingsStore) GetByProjectID(_ context.Context, projectID in
 	return &rs, nil
 }
 
-func (s *RepositorySettingsStore) GetOrCreate(_ context.Context, projectID int64, projectPath string) (*shared.RepositorySettings, error) {
+func (s *RepositorySettingsStore) GetOrCreate(_ context.Context, projectID int64, projectPath string) (*domain.RepositorySettings, error) {
 	s.b.mu.Lock()
 	defer s.b.mu.Unlock()
 
 	fname := filename(projectID)
-	var existing shared.RepositorySettings
+	var existing domain.RepositorySettings
 	err := s.b.readJSON(fname, &existing)
 	if err == nil {
 		return &existing, nil
@@ -58,7 +58,7 @@ func (s *RepositorySettingsStore) GetOrCreate(_ context.Context, projectID int64
 
 	// Auto-create
 	now := time.Now()
-	rs := &shared.RepositorySettings{
+	rs := &domain.RepositorySettings{
 		ID:              uuid.New(),
 		GitLabProjectID: projectID,
 		ProjectPath:     projectPath,
@@ -71,12 +71,12 @@ func (s *RepositorySettingsStore) GetOrCreate(_ context.Context, projectID int64
 	return rs, nil
 }
 
-func (s *RepositorySettingsStore) Upsert(_ context.Context, settings *shared.RepositorySettings) error {
+func (s *RepositorySettingsStore) Upsert(_ context.Context, settings *domain.RepositorySettings) error {
 	s.b.mu.Lock()
 	defer s.b.mu.Unlock()
 
 	fname := filename(settings.GitLabProjectID)
-	var existing shared.RepositorySettings
+	var existing domain.RepositorySettings
 	err := s.b.readJSON(fname, &existing)
 	if err == nil {
 		// Update only path and unarchive
@@ -104,7 +104,7 @@ func (s *RepositorySettingsStore) IncrementFeedbackCount(_ context.Context, proj
 	defer s.b.mu.Unlock()
 
 	fname := filename(projectID)
-	var rs shared.RepositorySettings
+	var rs domain.RepositorySettings
 	if err := s.b.readJSON(fname, &rs); err != nil {
 		return fmt.Errorf("read settings: %w", err)
 	}
@@ -118,7 +118,7 @@ func (s *RepositorySettingsStore) ResetFeedbackCount(_ context.Context, projectI
 	defer s.b.mu.Unlock()
 
 	fname := filename(projectID)
-	var rs shared.RepositorySettings
+	var rs domain.RepositorySettings
 	if err := s.b.readJSON(fname, &rs); err != nil {
 		return fmt.Errorf("read settings: %w", err)
 	}
@@ -132,7 +132,7 @@ func (s *RepositorySettingsStore) UpdateCustomPrompt(_ context.Context, projectI
 	defer s.b.mu.Unlock()
 
 	fname := filename(projectID)
-	var rs shared.RepositorySettings
+	var rs domain.RepositorySettings
 	if err := s.b.readJSON(fname, &rs); err != nil {
 		return fmt.Errorf("read settings: %w", err)
 	}
@@ -141,7 +141,7 @@ func (s *RepositorySettingsStore) UpdateCustomPrompt(_ context.Context, projectI
 	return s.b.writeJSON(fname, &rs)
 }
 
-func (s *RepositorySettingsStore) ListEnabled(_ context.Context) ([]*shared.RepositorySettings, error) {
+func (s *RepositorySettingsStore) ListEnabled(_ context.Context) ([]*domain.RepositorySettings, error) {
 	s.b.mu.RLock()
 	defer s.b.mu.RUnlock()
 
@@ -149,9 +149,9 @@ func (s *RepositorySettingsStore) ListEnabled(_ context.Context) ([]*shared.Repo
 	if err != nil {
 		return nil, fmt.Errorf("list settings files: %w", err)
 	}
-	var results []*shared.RepositorySettings
+	var results []*domain.RepositorySettings
 	for _, f := range files {
-		var rs shared.RepositorySettings
+		var rs domain.RepositorySettings
 		if err := s.b.readJSON(f, &rs); err != nil {
 			continue
 		}
@@ -167,7 +167,7 @@ func (s *RepositorySettingsStore) MarkArchived(_ context.Context, projectID int6
 	defer s.b.mu.Unlock()
 
 	fname := filename(projectID)
-	var rs shared.RepositorySettings
+	var rs domain.RepositorySettings
 	if err := s.b.readJSON(fname, &rs); err != nil {
 		return fmt.Errorf("read settings: %w", err)
 	}

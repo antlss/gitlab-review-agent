@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/antlss/gitlab-review-agent/internal/shared"
+	"github.com/antlss/gitlab-review-agent/internal/domain"
 )
 
 type GoogleClient struct {
@@ -33,7 +33,7 @@ func (c *GoogleClient) ModelName() string      { return c.model }
 func (c *GoogleClient) ContextWindowSize() int { return c.contextWindow }
 func (c *GoogleClient) ClientCount() int       { return 1 }
 
-func (c *GoogleClient) Chat(ctx context.Context, req shared.ChatRequest) (*shared.ChatResponse, error) {
+func (c *GoogleClient) Chat(ctx context.Context, req domain.ChatRequest) (*domain.ChatResponse, error) {
 	// Build Gemini request
 	var contents []map[string]any
 	var systemInstruction *map[string]any
@@ -152,9 +152,9 @@ func (c *GoogleClient) Chat(ctx context.Context, req shared.ChatRequest) (*share
 		return nil, fmt.Errorf("unmarshal response: %w", err)
 	}
 
-	result := &shared.ChatResponse{
+	result := &domain.ChatResponse{
 		StopReason: "stop",
-		Usage: shared.TokenUsage{
+		Usage: domain.TokenUsage{
 			InputTokens:  apiResp.UsageMetadata.PromptTokenCount,
 			OutputTokens: apiResp.UsageMetadata.CandidatesTokenCount,
 		},
@@ -166,7 +166,7 @@ func (c *GoogleClient) Chat(ctx context.Context, req shared.ChatRequest) (*share
 				result.Content += part.Text
 			}
 			if part.FunctionCall != nil {
-				result.ToolCalls = append(result.ToolCalls, shared.ToolCall{
+				result.ToolCalls = append(result.ToolCalls, domain.ToolCall{
 					ID:        part.FunctionCall.Name,
 					Name:      part.FunctionCall.Name,
 					InputJSON: string(part.FunctionCall.Args),

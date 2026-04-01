@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/antlss/gitlab-review-agent/internal/shared"
+	"github.com/antlss/gitlab-review-agent/internal/domain"
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
@@ -22,7 +22,7 @@ func NewFeedbackStore(db *sqlx.DB) *FeedbackStore {
 	return &FeedbackStore{db: db}
 }
 
-func (s *FeedbackStore) Create(ctx context.Context, feedback *shared.ReviewFeedback) error {
+func (s *FeedbackStore) Create(ctx context.Context, feedback *domain.ReviewFeedback) error {
 	feedback.ID = uuid.New()
 	feedback.CreatedAt = time.Now()
 	feedback.UpdatedAt = time.Now()
@@ -46,7 +46,7 @@ func (s *FeedbackStore) Create(ctx context.Context, feedback *shared.ReviewFeedb
 			?, ?
 		)`,
 		feedback.ID.String(), feedback.GitLabProjectID, reviewJobID, feedback.GitLabDiscussionID,
-		feedback.GitLabNoteID, feedback.FilePath, feedback.LineNumber, shared.PtrCategoryToStr(feedback.Category),
+		feedback.GitLabNoteID, feedback.FilePath, feedback.LineNumber, domain.PtrCategoryToStr(feedback.Category),
 		feedback.CommentSummary, feedback.Language, feedback.ModelUsed,
 		feedback.CreatedAt.Format(time.RFC3339), feedback.UpdatedAt.Format(time.RFC3339))
 	if err != nil {
@@ -55,8 +55,8 @@ func (s *FeedbackStore) Create(ctx context.Context, feedback *shared.ReviewFeedb
 	return nil
 }
 
-func (s *FeedbackStore) GetByNoteID(ctx context.Context, noteID int64) (*shared.ReviewFeedback, error) {
-	var fb shared.ReviewFeedback
+func (s *FeedbackStore) GetByNoteID(ctx context.Context, noteID int64) (*domain.ReviewFeedback, error) {
+	var fb domain.ReviewFeedback
 	err := s.db.GetContext(ctx, &fb,
 		`SELECT * FROM review_feedbacks WHERE gitlab_note_id = ?`, noteID)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -68,7 +68,7 @@ func (s *FeedbackStore) GetByNoteID(ctx context.Context, noteID int64) (*shared.
 	return &fb, nil
 }
 
-func (s *FeedbackStore) UpdateSignal(ctx context.Context, noteID int64, signal shared.FeedbackSignal, replyContent string) error {
+func (s *FeedbackStore) UpdateSignal(ctx context.Context, noteID int64, signal domain.FeedbackSignal, replyContent string) error {
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE review_feedbacks SET
 			signal = ?, signal_reply_content = ?, updated_at = ?
@@ -80,9 +80,9 @@ func (s *FeedbackStore) UpdateSignal(ctx context.Context, noteID int64, signal s
 	return nil
 }
 
-func (s *FeedbackStore) ListForConsolidation(ctx context.Context, projectID int64, minAgeDays int) ([]*shared.ReviewFeedback, error) {
+func (s *FeedbackStore) ListForConsolidation(ctx context.Context, projectID int64, minAgeDays int) ([]*domain.ReviewFeedback, error) {
 	cutoff := time.Now().AddDate(0, 0, -minAgeDays).Format(time.RFC3339)
-	var results []*shared.ReviewFeedback
+	var results []*domain.ReviewFeedback
 	err := s.db.SelectContext(ctx, &results, `
 		SELECT * FROM review_feedbacks
 		WHERE gitlab_project_id = ?
@@ -120,8 +120,8 @@ func (s *FeedbackStore) MarkConsolidated(ctx context.Context, ids []uuid.UUID) e
 	return nil
 }
 
-func (s *FeedbackStore) ListRecentByProject(ctx context.Context, projectID int64, limit int) ([]*shared.ReviewFeedback, error) {
-	var results []*shared.ReviewFeedback
+func (s *FeedbackStore) ListRecentByProject(ctx context.Context, projectID int64, limit int) ([]*domain.ReviewFeedback, error) {
+	var results []*domain.ReviewFeedback
 	err := s.db.SelectContext(ctx, &results, `
 		SELECT * FROM review_feedbacks
 		WHERE gitlab_project_id = ? AND signal IS NOT NULL

@@ -14,25 +14,25 @@ import (
 	"github.com/antlss/gitlab-review-agent/internal/core/agents/replier"
 	"github.com/antlss/gitlab-review-agent/internal/core/prompt"
 	"github.com/antlss/gitlab-review-agent/internal/pkg/llm"
-	"github.com/antlss/gitlab-review-agent/internal/shared"
+	"github.com/antlss/gitlab-review-agent/internal/domain"
 )
 
 type Pipeline struct {
 	cfg           config.Config
-	replyJobStore shared.ReplyJobStore
-	repoSettings  shared.RepositorySettingsStore
-	feedbackStore shared.FeedbackStore
-	gitlabClient  shared.GitLabClient
+	replyJobStore domain.ReplyJobStore
+	repoSettings  domain.RepositorySettingsStore
+	feedbackStore domain.FeedbackStore
+	gitlabClient  domain.GitLabClient
 	replyAgent    *replier.Agent
 	reposDir      string
 }
 
 type PipelineDeps struct {
 	Config        config.Config
-	ReplyJobStore shared.ReplyJobStore
-	RepoSettings  shared.RepositorySettingsStore
-	FeedbackStore shared.FeedbackStore
-	GitLabClient  shared.GitLabClient
+	ReplyJobStore domain.ReplyJobStore
+	RepoSettings  domain.RepositorySettingsStore
+	FeedbackStore domain.FeedbackStore
+	GitLabClient  domain.GitLabClient
 	ReplyAgent    *replier.Agent
 	ReposDir      string
 }
@@ -49,10 +49,10 @@ func NewPipeline(deps PipelineDeps) *Pipeline {
 	}
 }
 
-func (p *Pipeline) Execute(ctx context.Context, job *shared.ReplyJob) error {
+func (p *Pipeline) Execute(ctx context.Context, job *domain.ReplyJob) error {
 	log := slog.With("job_id", job.ID.String(), "discussion_id", job.DiscussionID)
 
-	p.replyJobStore.UpdateStatus(ctx, job.ID, shared.ReplyJobStatusProcessing, nil)
+	p.replyJobStore.UpdateStatus(ctx, job.ID, domain.ReplyJobStatusProcessing, nil)
 
 	discussion, err := p.gitlabClient.GetDiscussion(ctx, job.GitLabProjectID, job.MrIID, job.DiscussionID)
 	if err != nil || discussion == nil {
@@ -80,7 +80,7 @@ func (p *Pipeline) Execute(ctx context.Context, job *shared.ReplyJob) error {
 
 	// For "fixed/done" claims, read latest code from disk to let LLM verify the fix
 	var latestCodeContext string
-	if (intent == shared.IntentAgree || intent == shared.IntentAcknowledge) &&
+	if (intent == domain.IntentAgree || intent == domain.IntentAcknowledge) &&
 		job.BotCommentFilePath != nil && job.BotCommentLine != nil {
 		latestCodeContext = readFileLines(repoPath, *job.BotCommentFilePath, *job.BotCommentLine)
 	}
@@ -117,12 +117,12 @@ func (p *Pipeline) Execute(ctx context.Context, job *shared.ReplyJob) error {
 
 	p.feedbackStore.UpdateSignal(ctx, job.BotCommentID, signal, job.TriggerNoteContent)
 
-	if signal == shared.FeedbackSignalAccepted || signal == shared.FeedbackSignalRejected {
+	if signal == domain.FeedbackSignalAccepted || signal == domain.FeedbackSignalRejected {
 		p.repoSettings.IncrementFeedbackCount(ctx, job.GitLabProjectID, 1)
 	}
 
 	// Auto-resolve on reject/acknowledge only; agree/fixed waits for LLM verification
-	if intent == shared.IntentReject || intent == shared.IntentAcknowledge {
+	if intent == domain.IntentReject || intent == domain.IntentAcknowledge {
 		if err := p.gitlabClient.ResolveDiscussion(ctx, job.GitLabProjectID, job.MrIID, job.DiscussionID); err != nil {
 			log.Warn("failed to auto-resolve discussion", "error", err)
 		} else {
@@ -136,13 +136,13 @@ func (p *Pipeline) Execute(ctx context.Context, job *shared.ReplyJob) error {
 	return nil
 }
 
-func (p *Pipeline) failJob(ctx context.Context, job *shared.ReplyJob, msg string) error {
+func (p *Pipeline) failJob(ctx context.Context, job *domain.ReplyJob, msg string) error {
 	slog.Error("reply job failed", "job_id", job.ID.String(), "error", msg)
-	p.replyJobStore.UpdateStatus(ctx, job.ID, shared.ReplyJobStatusFailed, &msg)
+	p.replyJobStore.UpdateStatus(ctx, job.ID, domain.ReplyJobStatusFailed, &msg)
 	return errors.New(msg)
 }
 
-func formatThreadHistory(notes []shared.GitLabNote) string {
+func formatThreadHistory(notes []domain.GitLabNote) string {
 	var sb strings.Builder
 	for _, n := range notes {
 		role := n.AuthorName

@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/antlss/gitlab-review-agent/internal/shared"
+	"github.com/antlss/gitlab-review-agent/internal/domain"
 )
 
 type OpenAIClient struct {
@@ -39,7 +39,7 @@ func (c *OpenAIClient) ModelName() string      { return c.model }
 func (c *OpenAIClient) ContextWindowSize() int { return c.contextWindow }
 func (c *OpenAIClient) ClientCount() int       { return 1 }
 
-func (c *OpenAIClient) Chat(ctx context.Context, req shared.ChatRequest) (*shared.ChatResponse, error) {
+func (c *OpenAIClient) Chat(ctx context.Context, req domain.ChatRequest) (*domain.ChatResponse, error) {
 	// Build messages
 	var messages []map[string]any
 	for _, msg := range req.Messages {
@@ -144,8 +144,8 @@ func (c *OpenAIClient) Chat(ctx context.Context, req shared.ChatRequest) (*share
 		return nil, fmt.Errorf("unmarshal response: %w", err)
 	}
 
-	result := &shared.ChatResponse{
-		Usage: shared.TokenUsage{
+	result := &domain.ChatResponse{
+		Usage: domain.TokenUsage{
 			InputTokens:  apiResp.Usage.PromptTokens,
 			OutputTokens: apiResp.Usage.CompletionTokens,
 		},
@@ -157,7 +157,7 @@ func (c *OpenAIClient) Chat(ctx context.Context, req shared.ChatRequest) (*share
 		result.StopReason = choice.FinishReason
 
 		for _, tc := range choice.Message.ToolCalls {
-			result.ToolCalls = append(result.ToolCalls, shared.ToolCall{
+			result.ToolCalls = append(result.ToolCalls, domain.ToolCall{
 				ID:        tc.ID,
 				Name:      tc.Function.Name,
 				InputJSON: tc.Function.Arguments,

@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/antlss/gitlab-review-agent/internal/shared"
+	"github.com/antlss/gitlab-review-agent/internal/domain"
 
 	"github.com/google/uuid"
 )
@@ -27,11 +27,11 @@ func recordFilename(projectID, mrIID int64) string {
 	return fmt.Sprintf("%d_%d.json", projectID, mrIID)
 }
 
-func (s *ReviewRecordStore) GetLastCompleted(_ context.Context, projectID, mrIID int64) (*shared.ReviewRecord, error) {
+func (s *ReviewRecordStore) GetLastCompleted(_ context.Context, projectID, mrIID int64) (*domain.ReviewRecord, error) {
 	s.b.mu.RLock()
 	defer s.b.mu.RUnlock()
 
-	var record shared.ReviewRecord
+	var record domain.ReviewRecord
 	err := s.b.readJSON(recordFilename(projectID, mrIID), &record)
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -42,7 +42,7 @@ func (s *ReviewRecordStore) GetLastCompleted(_ context.Context, projectID, mrIID
 	return &record, nil
 }
 
-func (s *ReviewRecordStore) Upsert(_ context.Context, record *shared.ReviewRecord) error {
+func (s *ReviewRecordStore) Upsert(_ context.Context, record *domain.ReviewRecord) error {
 	s.b.mu.Lock()
 	defer s.b.mu.Unlock()
 

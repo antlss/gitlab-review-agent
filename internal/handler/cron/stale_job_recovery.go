@@ -4,15 +4,15 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/antlss/gitlab-review-agent/internal/shared"
+	"github.com/antlss/gitlab-review-agent/internal/domain"
 )
 
 type StaleJobRecoveryJob struct {
-	jobStore         shared.ReviewJobStore
+	jobStore         domain.ReviewJobStore
 	olderThanMinutes int
 }
 
-func NewStaleJobRecoveryJob(jobStore shared.ReviewJobStore, olderThanMinutes int) *StaleJobRecoveryJob {
+func NewStaleJobRecoveryJob(jobStore domain.ReviewJobStore, olderThanMinutes int) *StaleJobRecoveryJob {
 	return &StaleJobRecoveryJob{
 		jobStore:         jobStore,
 		olderThanMinutes: olderThanMinutes,
@@ -35,7 +35,7 @@ func (j *StaleJobRecoveryJob) Run() {
 	recovered := 0
 	for _, job := range staleJobs {
 		errMsg := "stale job recovered: exceeded maximum processing time"
-		if err := j.jobStore.UpdateStatus(ctx, job.ID, shared.ReviewJobStatusFailed, &errMsg); err != nil {
+		if err := j.jobStore.UpdateStatus(ctx, job.ID, domain.ReviewJobStatusFailed, &errMsg); err != nil {
 			slog.Error("recover stale job", "job_id", job.ID, "error", err)
 			continue
 		}

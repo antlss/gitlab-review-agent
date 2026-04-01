@@ -9,23 +9,23 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/antlss/gitlab-review-agent/internal/core/prompt"
-	"github.com/antlss/gitlab-review-agent/internal/shared"
+	"github.com/antlss/gitlab-review-agent/internal/domain"
 )
 
 // Consolidator merges accumulated feedbacks into a custom_prompt.
 type Consolidator struct {
-	feedbackStore shared.FeedbackStore
-	repoSettings  shared.RepositorySettingsStore
-	llmClient     shared.LLMClient
+	feedbackStore domain.FeedbackStore
+	repoSettings  domain.RepositorySettingsStore
+	llmClient     domain.LLMClient
 	minCount      int
 	minAgeDays    int
 	maxWords      int
 }
 
 func NewConsolidator(
-	feedbackStore shared.FeedbackStore,
-	repoSettings shared.RepositorySettingsStore,
-	llmClient shared.LLMClient,
+	feedbackStore domain.FeedbackStore,
+	repoSettings domain.RepositorySettingsStore,
+	llmClient domain.LLMClient,
 	minCount, minAgeDays, maxWords int,
 ) *Consolidator {
 	return &Consolidator{
@@ -93,9 +93,9 @@ func (c *Consolidator) ConsolidateProject(ctx context.Context, projectID int64) 
 			sb.WriteString(fmt.Sprintf("  Developer reply: %q\n", replyContent))
 		}
 		switch signal {
-		case shared.FeedbackSignalAccepted:
+		case domain.FeedbackSignalAccepted:
 			accepted++
-		case shared.FeedbackSignalRejected:
+		case domain.FeedbackSignalRejected:
 			rejected++
 		default:
 			neutral++
@@ -109,10 +109,10 @@ func (c *Consolidator) ConsolidateProject(ctx context.Context, projectID int64) 
 
 	systemMsg := prompt.ConsolidatorPrompt(existingPrompt, accepted, rejected, neutral, sb.String(), c.maxWords)
 
-	req := shared.ChatRequest{
+	req := domain.ChatRequest{
 		Model:     c.llmClient.ModelName(),
 		MaxTokens: 2000,
-		Messages: []shared.ChatMessage{
+		Messages: []domain.ChatMessage{
 			{Role: "user", Content: systemMsg},
 		},
 	}

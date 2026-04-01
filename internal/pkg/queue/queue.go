@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/antlss/gitlab-review-agent/internal/shared"
+	"github.com/antlss/gitlab-review-agent/internal/domain"
 )
 
 const (
@@ -22,7 +22,7 @@ type lockEntry struct {
 }
 
 type dlqEntry struct {
-	Job      shared.QueueJob `json:"job"`
+	Job      domain.QueueJob `json:"job"`
 	Error    string          `json:"error"`
 	FailedAt time.Time       `json:"failedAt"`
 }
@@ -30,15 +30,15 @@ type dlqEntry struct {
 type Queue struct {
 	mu     sync.Mutex
 	cond   *sync.Cond
-	queues map[int64][]shared.QueueJob // per-project FIFO
+	queues map[int64][]domain.QueueJob // per-project FIFO
 	locks  map[int64]lockEntry         // per-project processing lock
 	dlq    map[int64][]dlqEntry        // per-project dead letter queue
 	closed bool
 }
 
-func NewQueue() *Queue {
+func New() *Queue {
 	q := &Queue{
-		queues: make(map[int64][]shared.QueueJob),
+		queues: make(map[int64][]domain.QueueJob),
 		locks:  make(map[int64]lockEntry),
 		dlq:    make(map[int64][]dlqEntry),
 	}
@@ -56,7 +56,7 @@ func (q *Queue) Close() {
 }
 
 // Enqueue adds a job to the tail of the project's queue (FIFO).
-func (q *Queue) Enqueue(_ context.Context, job shared.QueueJob) error {
+func (q *Queue) Enqueue(_ context.Context, job domain.QueueJob) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
@@ -71,7 +71,7 @@ func (q *Queue) Enqueue(_ context.Context, job shared.QueueJob) error {
 
 // GetNextJob tries to acquire a job from any available project queue.
 // Returns (job, projectID, nil) if a job was found, (nil, 0, nil) if no jobs available.
-func (q *Queue) GetNextJob(ctx context.Context, workerID string) (*shared.QueueJob, int64, error) {
+func (q *Queue) GetNextJob(ctx context.Context, workerID string) (*domain.QueueJob, int64, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
@@ -146,7 +146,7 @@ func (q *Queue) ReleaseLock(_ context.Context, projectID int64, workerID string)
 }
 
 // SendToDLQ moves a failed job to the dead letter queue.
-func (q *Queue) SendToDLQ(_ context.Context, job shared.QueueJob, errMsg string) error {
+func (q *Queue) SendToDLQ(_ context.Context, job domain.QueueJob, errMsg string) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 

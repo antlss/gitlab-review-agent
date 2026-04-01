@@ -17,16 +17,16 @@ import (
 	"github.com/antlss/gitlab-review-agent/internal/pkg/git"
 	"github.com/antlss/gitlab-review-agent/internal/pkg/llm"
 	"github.com/antlss/gitlab-review-agent/internal/pkg/tools"
-	"github.com/antlss/gitlab-review-agent/internal/shared"
+	"github.com/antlss/gitlab-review-agent/internal/domain"
 )
 
 type Pipeline struct {
 	cfg           config.Config
-	jobStore      shared.ReviewJobStore
-	repoSettings  shared.RepositorySettingsStore
-	recordStore   shared.ReviewRecordStore
-	feedbackStore shared.FeedbackStore
-	gitlabClient  shared.GitLabClient
+	jobStore      domain.ReviewJobStore
+	repoSettings  domain.RepositorySettingsStore
+	recordStore   domain.ReviewRecordStore
+	feedbackStore domain.FeedbackStore
+	gitlabClient  domain.GitLabClient
 	gitManager    *git.Manager
 	gatherer      *ContextGatherer
 	agent         *reviewer.Agent
@@ -34,11 +34,11 @@ type Pipeline struct {
 
 type PipelineDeps struct {
 	Config        config.Config
-	JobStore      shared.ReviewJobStore
-	RepoSettings  shared.RepositorySettingsStore
-	RecordStore   shared.ReviewRecordStore
-	FeedbackStore shared.FeedbackStore
-	GitLabClient  shared.GitLabClient
+	JobStore      domain.ReviewJobStore
+	RepoSettings  domain.RepositorySettingsStore
+	RecordStore   domain.ReviewRecordStore
+	FeedbackStore domain.FeedbackStore
+	GitLabClient  domain.GitLabClient
 	GitManager    *git.Manager
 	Gatherer      *ContextGatherer
 	Agent         *reviewer.Agent
@@ -58,10 +58,10 @@ func NewPipeline(deps PipelineDeps) *Pipeline {
 	}
 }
 
-func (p *Pipeline) Execute(ctx context.Context, job *shared.ReviewJob) error {
+func (p *Pipeline) Execute(ctx context.Context, job *domain.ReviewJob) error {
 	log := slog.With("job_id", job.ID.String(), "project_id", job.GitLabProjectID, "mr_iid", job.MrIID)
 
-	if err := p.jobStore.UpdateStatus(ctx, job.ID, shared.ReviewJobStatusReviewing, nil); err != nil {
+	if err := p.jobStore.UpdateStatus(ctx, job.ID, domain.ReviewJobStatusReviewing, nil); err != nil {
 		return fmt.Errorf("update status: %w", err)
 	}
 
@@ -95,7 +95,7 @@ func (p *Pipeline) Execute(ctx context.Context, job *shared.ReviewJob) error {
 	}
 
 	excludePatterns := append(DefaultExcludePatterns(), job.ExcludePatternList()...)
-	var filteredFiles []shared.DiffFile
+	var filteredFiles []domain.DiffFile
 	for i := range diffFiles {
 		f := &diffFiles[i]
 		if f.Status == "D" {
@@ -116,9 +116,9 @@ func (p *Pipeline) Execute(ctx context.Context, job *shared.ReviewJob) error {
 			if _, err := p.gitlabClient.PostThreadComment(ctx, job.GitLabProjectID, job.MrIID, msg); err != nil {
 				log.Warn("failed to post skip comment", "error", err)
 			}
-			return p.jobStore.UpdateStatus(ctx, job.ID, shared.ReviewJobStatusSkippedSize, nil)
+			return p.jobStore.UpdateStatus(ctx, job.ID, domain.ReviewJobStatusSkippedSize, nil)
 		}
-		slices.SortFunc(filteredFiles, func(a, b shared.DiffFile) int {
+		slices.SortFunc(filteredFiles, func(a, b domain.DiffFile) int {
 			return cmp.Compare(b.RiskScore, a.RiskScore) // descending
 		})
 		if len(filteredFiles) > p.cfg.Review.SampleFileCount {
@@ -126,7 +126,7 @@ func (p *Pipeline) Execute(ctx context.Context, job *shared.ReviewJob) error {
 		}
 	}
 
-	slices.SortFunc(filteredFiles, func(a, b shared.DiffFile) int {
+	slices.SortFunc(filteredFiles, func(a, b domain.DiffFile) int {
 		return cmp.Compare(b.RiskScore, a.RiskScore) // descending
 	})
 
@@ -165,7 +165,7 @@ func (p *Pipeline) Execute(ctx context.Context, job *shared.ReviewJob) error {
 		return p.jobStore.UpdateCompleted(ctx, job.ID, 0, 0)
 	}
 
-	if err := p.jobStore.UpdateStatus(ctx, job.ID, shared.ReviewJobStatusPosting, nil); err != nil {
+	if err := p.jobStore.UpdateStatus(ctx, job.ID, domain.ReviewJobStatusPosting, nil); err != nil {
 		log.Warn("failed to update status to POSTING", "error", err)
 	}
 	posted, suppressed := 0, 0
@@ -177,7 +177,7 @@ func (p *Pipeline) Execute(ctx context.Context, job *shared.ReviewJob) error {
 		}
 
 		body := FormatComment(c, lang)
-		resp, err := p.gitlabClient.PostInlineComment(ctx, shared.PostInlineCommentRequest{
+		resp, err := p.gitlabClient.PostInlineComment(ctx, domain.PostInlineCommentRequest{
 			ProjectID: job.GitLabProjectID,
 			MrIID:     job.MrIID,
 			Body:      body,
@@ -196,7 +196,7 @@ func (p *Pipeline) Execute(ctx context.Context, job *shared.ReviewJob) error {
 		c.GitLabDiscussionID = &resp.DiscussionID
 		posted++
 
-		fb := &shared.ReviewFeedback{
+		fb := &domain.ReviewFeedback{
 			GitLabProjectID:    job.GitLabProjectID,
 			ReviewJobID:        &job.ID,
 			GitLabDiscussionID: resp.DiscussionID,
@@ -204,9 +204,9 @@ func (p *Pipeline) Execute(ctx context.Context, job *shared.ReviewJob) error {
 			FilePath:           &c.FilePath,
 			LineNumber:         &c.LineNumber,
 			Category:           &c.Category,
-			CommentSummary:     shared.StrPtr(shared.Truncate(c.ReviewComment, 200)),
-			Language:           shared.StrPtr(reviewCtx.DetectedLanguage),
-			ModelUsed:          shared.StrPtr(llmClient.ModelName()),
+			CommentSummary:     domain.StrPtr(domain.Truncate(c.ReviewComment, 200)),
+			Language:           domain.StrPtr(reviewCtx.DetectedLanguage),
+			ModelUsed:          domain.StrPtr(llmClient.ModelName()),
 		}
 		if err := p.feedbackStore.Create(ctx, fb); err != nil {
 			log.Warn("failed to create feedback", "error", err)
@@ -234,7 +234,7 @@ func (p *Pipeline) Execute(ctx context.Context, job *shared.ReviewJob) error {
 		log.Warn("failed to marshal reviewed files", "error", err)
 		filesJSON = []byte("[]")
 	}
-	if err := p.recordStore.Upsert(ctx, &shared.ReviewRecord{
+	if err := p.recordStore.Upsert(ctx, &domain.ReviewRecord{
 		GitLabProjectID: job.GitLabProjectID,
 		MrIID:           job.MrIID,
 		ReviewJobID:     job.ID,
@@ -267,10 +267,10 @@ type aggregatedResult struct {
 // executeSingle runs the original single-agent review for small MRs.
 func (p *Pipeline) executeSingle(
 	ctx context.Context,
-	job *shared.ReviewJob,
-	filteredFiles []shared.DiffFile,
-	reviewCtx *shared.ReviewContext,
-	llmClient shared.LLMClient,
+	job *domain.ReviewJob,
+	filteredFiles []domain.DiffFile,
+	reviewCtx *domain.ReviewContext,
+	llmClient domain.LLMClient,
 	baseSHA string,
 	lang prompt.ResponseLanguage,
 ) (*aggregatedResult, error) {
@@ -328,10 +328,10 @@ func (p *Pipeline) executeSingle(
 // executeChunked splits files into domain-grouped chunks and reviews them in parallel.
 func (p *Pipeline) executeChunked(
 	ctx context.Context,
-	job *shared.ReviewJob,
-	filteredFiles []shared.DiffFile,
-	reviewCtx *shared.ReviewContext,
-	llmClient shared.LLMClient,
+	job *domain.ReviewJob,
+	filteredFiles []domain.DiffFile,
+	reviewCtx *domain.ReviewContext,
+	llmClient domain.LLMClient,
 	baseSHA string,
 	lang prompt.ResponseLanguage,
 ) (*aggregatedResult, error) {
@@ -356,7 +356,7 @@ func (p *Pipeline) executeChunked(
 
 	for i, chunk := range chunks {
 		wg.Add(1)
-		go func(idx int, chunkFiles []shared.DiffFile) {
+		go func(idx int, chunkFiles []domain.DiffFile) {
 			defer wg.Done()
 			defer func() {
 				if r := recover(); r != nil {
@@ -472,7 +472,7 @@ func (p *Pipeline) executeChunked(
 }
 
 // preloadDiffsForFiles preloads all diffs for a set of files, respecting size limits.
-func (p *Pipeline) preloadDiffsForFiles(ctx context.Context, projectID int64, files []shared.DiffFile, baseSHA, headSHA string) (string, bool) {
+func (p *Pipeline) preloadDiffsForFiles(ctx context.Context, projectID int64, files []domain.DiffFile, baseSHA, headSHA string) (string, bool) {
 	preloadMaxBytes := p.cfg.Review.PreloadDiffMaxKB * 1024
 	content, included := p.computePreloadedDiffs(ctx, projectID, files, baseSHA, headSHA, preloadMaxBytes)
 	allPreloaded := included == len(files)
@@ -481,7 +481,7 @@ func (p *Pipeline) preloadDiffsForFiles(ctx context.Context, projectID int64, fi
 
 // acquireAndFetch wraps git lock acquisition + fetch/checkout in a single
 // function so defer correctly scopes the lock release to only the git operations.
-func (p *Pipeline) acquireAndFetch(ctx context.Context, job *shared.ReviewJob, projectPath string) error {
+func (p *Pipeline) acquireAndFetch(ctx context.Context, job *domain.ReviewJob, projectPath string) error {
 	if err := p.gitManager.AcquireGitLock(ctx, job.GitLabProjectID); err != nil {
 		return err
 	}
@@ -489,7 +489,7 @@ func (p *Pipeline) acquireAndFetch(ctx context.Context, job *shared.ReviewJob, p
 	return p.gitManager.FetchAndCheckout(ctx, job.GitLabProjectID, projectPath, job.HeadSHA)
 }
 
-func (p *Pipeline) determineBaseSHA(ctx context.Context, job *shared.ReviewJob, fullRecheck bool) (string, error) {
+func (p *Pipeline) determineBaseSHA(ctx context.Context, job *domain.ReviewJob, fullRecheck bool) (string, error) {
 	if fullRecheck {
 		return p.gitManager.RevParse(ctx, job.GitLabProjectID, "origin/"+job.TargetBranch)
 	}
@@ -513,7 +513,7 @@ func (p *Pipeline) determineBaseSHA(ctx context.Context, job *shared.ReviewJob, 
 
 // autoResolveFixedThreads resolves previous bot comment threads where the
 // flagged file+line was modified in the current diff (likely fixed by new commit).
-func (p *Pipeline) autoResolveFixedThreads(ctx context.Context, job *shared.ReviewJob, botComments []shared.BotUnresolvedComment, diffFiles []shared.DiffFile) int {
+func (p *Pipeline) autoResolveFixedThreads(ctx context.Context, job *domain.ReviewJob, botComments []domain.BotUnresolvedComment, diffFiles []domain.DiffFile) int {
 	if len(botComments) == 0 {
 		return 0
 	}
@@ -549,22 +549,22 @@ func (p *Pipeline) autoResolveFixedThreads(ctx context.Context, job *shared.Revi
 	return resolved
 }
 
-func (p *Pipeline) failJob(ctx context.Context, job *shared.ReviewJob, msg string) error {
+func (p *Pipeline) failJob(ctx context.Context, job *domain.ReviewJob, msg string) error {
 	slog.Error("review job failed", "job_id", job.ID.String(), "error", msg)
-	if err := p.jobStore.UpdateStatus(ctx, job.ID, shared.ReviewJobStatusFailed, &msg); err != nil {
+	if err := p.jobStore.UpdateStatus(ctx, job.ID, domain.ReviewJobStatusFailed, &msg); err != nil {
 		slog.Error("failed to mark job as failed in store", "job_id", job.ID.String(), "store_error", err)
 	}
 	return errors.New(msg)
 }
 
-func formatDiffStat(files []shared.DiffFile) string {
+func formatDiffStat(files []domain.DiffFile) string {
 	var sb strings.Builder
 	for _, f := range files {
 		icon := "🟢"
 		switch f.RiskTier {
-		case shared.RiskHigh:
+		case domain.RiskHigh:
 			icon = "🔴"
-		case shared.RiskMedium:
+		case domain.RiskMedium:
 			icon = "🟡"
 		}
 		fmt.Fprintf(&sb, "%s %s (+%d/-%d) [%s]\n", icon, f.Path, f.LinesAdded, f.LinesRemoved, f.RiskTier)
@@ -572,7 +572,7 @@ func formatDiffStat(files []shared.DiffFile) string {
 	return sb.String()
 }
 
-func FormatComment(c *shared.ParsedComment, lang prompt.ResponseLanguage) string {
+func FormatComment(c *domain.ParsedComment, lang prompt.ResponseLanguage) string {
 	badge := SeverityBadge(c.Severity)
 	comment := fmt.Sprintf("%s **[%s]** %s", badge, strings.ToUpper(string(c.Category)), c.ReviewComment)
 	if c.Suggestion != "" {
@@ -581,13 +581,13 @@ func FormatComment(c *shared.ParsedComment, lang prompt.ResponseLanguage) string
 	return comment
 }
 
-func SeverityBadge(s shared.CommentSeverity) string {
+func SeverityBadge(s domain.CommentSeverity) string {
 	switch s {
-	case shared.SeverityCritical:
+	case domain.SeverityCritical:
 		return "🔴 `CRITICAL`"
-	case shared.SeverityHigh:
+	case domain.SeverityHigh:
 		return "🟠 `HIGH`"
-	case shared.SeverityMedium:
+	case domain.SeverityMedium:
 		return "🟡 `MEDIUM`"
 	default:
 		return "🔵 `LOW`"
@@ -626,7 +626,7 @@ func buildSummaryComment(posted, suppressed, total, resolved int, result *aggreg
 	return sb.String()
 }
 
-func extractFilePaths(files []shared.DiffFile) []string {
+func extractFilePaths(files []domain.DiffFile) []string {
 	paths := make([]string, len(files))
 	for i, f := range files {
 		paths[i] = f.Path
@@ -634,7 +634,7 @@ func extractFilePaths(files []shared.DiffFile) []string {
 	return paths
 }
 
-func (p *Pipeline) computePreloadedDiffs(ctx context.Context, projectID int64, files []shared.DiffFile, baseSHA, headSHA string, maxBytes int) (string, int) {
+func (p *Pipeline) computePreloadedDiffs(ctx context.Context, projectID int64, files []domain.DiffFile, baseSHA, headSHA string, maxBytes int) (string, int) {
 	if len(files) == 0 || maxBytes <= 0 {
 		return "", 0
 	}

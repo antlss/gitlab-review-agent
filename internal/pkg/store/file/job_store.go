@@ -9,7 +9,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/antlss/gitlab-review-agent/internal/shared"
+	"github.com/antlss/gitlab-review-agent/internal/domain"
 
 	"github.com/google/uuid"
 )
@@ -30,7 +30,7 @@ func jobFilename(id uuid.UUID) string {
 	return id.String() + ".json"
 }
 
-func (s *ReviewJobStore) Create(_ context.Context, job *shared.ReviewJob) error {
+func (s *ReviewJobStore) Create(_ context.Context, job *domain.ReviewJob) error {
 	if job.ID == (uuid.UUID{}) {
 		return fmt.Errorf("review job ID must be set before calling Create")
 	}
@@ -46,11 +46,11 @@ func (s *ReviewJobStore) Create(_ context.Context, job *shared.ReviewJob) error 
 	return s.b.writeJSON(jobFilename(job.ID), job)
 }
 
-func (s *ReviewJobStore) GetByID(_ context.Context, id uuid.UUID) (*shared.ReviewJob, error) {
+func (s *ReviewJobStore) GetByID(_ context.Context, id uuid.UUID) (*domain.ReviewJob, error) {
 	s.b.mu.RLock()
 	defer s.b.mu.RUnlock()
 
-	var job shared.ReviewJob
+	var job domain.ReviewJob
 	err := s.b.readJSON(jobFilename(id), &job)
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -61,12 +61,12 @@ func (s *ReviewJobStore) GetByID(_ context.Context, id uuid.UUID) (*shared.Revie
 	return &job, nil
 }
 
-func (s *ReviewJobStore) updateJob(id uuid.UUID, fn func(*shared.ReviewJob)) error {
+func (s *ReviewJobStore) updateJob(id uuid.UUID, fn func(*domain.ReviewJob)) error {
 	s.b.mu.Lock()
 	defer s.b.mu.Unlock()
 
 	fname := jobFilename(id)
-	var job shared.ReviewJob
+	var job domain.ReviewJob
 	if err := s.b.readJSON(fname, &job); err != nil {
 		return fmt.Errorf("read review job for update: %w (path: %s)", err, filepath.Join(s.b.dir, fname))
 	}
@@ -75,29 +75,29 @@ func (s *ReviewJobStore) updateJob(id uuid.UUID, fn func(*shared.ReviewJob)) err
 	return s.b.writeJSON(fname, &job)
 }
 
-func (s *ReviewJobStore) UpdateStatus(_ context.Context, id uuid.UUID, status shared.ReviewJobStatus, errMsg *string) error {
-	return s.updateJob(id, func(job *shared.ReviewJob) {
+func (s *ReviewJobStore) UpdateStatus(_ context.Context, id uuid.UUID, status domain.ReviewJobStatus, errMsg *string) error {
+	return s.updateJob(id, func(job *domain.ReviewJob) {
 		job.Status = status
 		job.ErrorMessage = errMsg
 		now := time.Now()
-		if status == shared.ReviewJobStatusReviewing {
+		if status == domain.ReviewJobStatusReviewing {
 			job.StartedAt = &now
 		}
-		if status == shared.ReviewJobStatusCompleted || status == shared.ReviewJobStatusFailed ||
-			status == shared.ReviewJobStatusParseFailed || status == shared.ReviewJobStatusSkippedSize {
+		if status == domain.ReviewJobStatusCompleted || status == domain.ReviewJobStatusFailed ||
+			status == domain.ReviewJobStatusParseFailed || status == domain.ReviewJobStatusSkippedSize {
 			job.CompletedAt = &now
 		}
 	})
 }
 
 func (s *ReviewJobStore) UpdateBaseSHA(_ context.Context, id uuid.UUID, baseSHA string) error {
-	return s.updateJob(id, func(job *shared.ReviewJob) {
+	return s.updateJob(id, func(job *domain.ReviewJob) {
 		job.BaseSHA = &baseSHA
 	})
 }
 
-func (s *ReviewJobStore) UpdateAIOutput(_ context.Context, id uuid.UUID, raw string, parsed []shared.ParsedComment, iterations, tokens int) error {
-	return s.updateJob(id, func(job *shared.ReviewJob) {
+func (s *ReviewJobStore) UpdateAIOutput(_ context.Context, id uuid.UUID, raw string, parsed []domain.ParsedComment, iterations, tokens int) error {
+	return s.updateJob(id, func(job *domain.ReviewJob) {
 		job.AIOutputRaw = &raw
 		parsedJSON, _ := json.Marshal(parsed)
 		job.AIOutputParsed = parsedJSON
@@ -107,8 +107,8 @@ func (s *ReviewJobStore) UpdateAIOutput(_ context.Context, id uuid.UUID, raw str
 }
 
 func (s *ReviewJobStore) UpdateCompleted(_ context.Context, id uuid.UUID, posted, suppressed int) error {
-	return s.updateJob(id, func(job *shared.ReviewJob) {
-		job.Status = shared.ReviewJobStatusCompleted
+	return s.updateJob(id, func(job *domain.ReviewJob) {
+		job.Status = domain.ReviewJobStatusCompleted
 		job.TotalCommentsPosted = &posted
 		job.TotalCommentsSuppressed = &suppressed
 		now := time.Now()
@@ -117,7 +117,7 @@ func (s *ReviewJobStore) UpdateCompleted(_ context.Context, id uuid.UUID, posted
 }
 
 func (s *ReviewJobStore) UpdateModelUsed(_ context.Context, id uuid.UUID, model string) error {
-	return s.updateJob(id, func(job *shared.ReviewJob) {
+	return s.updateJob(id, func(job *domain.ReviewJob) {
 		job.ModelUsed = &model
 	})
 }
@@ -133,14 +133,14 @@ func (s *ReviewJobStore) ExistsPendingOrCompleted(_ context.Context, projectID, 
 	}
 
 	for _, f := range files {
-		var job shared.ReviewJob
+		var job domain.ReviewJob
 		if err := s.b.readJSON(f, &job); err != nil {
 			continue
 		}
 		if job.GitLabProjectID == projectID && job.MrIID == mrIID && job.HeadSHA == headSHA &&
-			(job.Status == shared.ReviewJobStatusPending ||
-				job.Status == shared.ReviewJobStatusReviewing ||
-				job.Status == shared.ReviewJobStatusCompleted) &&
+			(job.Status == domain.ReviewJobStatusPending ||
+				job.Status == domain.ReviewJobStatusReviewing ||
+				job.Status == domain.ReviewJobStatusCompleted) &&
 			job.CreatedAt.After(cutoff) {
 			return true, nil
 		}
@@ -148,7 +148,7 @@ func (s *ReviewJobStore) ExistsPendingOrCompleted(_ context.Context, projectID, 
 	return false, nil
 }
 
-func (s *ReviewJobStore) ListStale(_ context.Context, olderThanMinutes int) ([]*shared.ReviewJob, error) {
+func (s *ReviewJobStore) ListStale(_ context.Context, olderThanMinutes int) ([]*domain.ReviewJob, error) {
 	s.b.mu.RLock()
 	defer s.b.mu.RUnlock()
 
@@ -158,13 +158,13 @@ func (s *ReviewJobStore) ListStale(_ context.Context, olderThanMinutes int) ([]*
 		return nil, fmt.Errorf("list review jobs: %w", err)
 	}
 
-	var jobs []*shared.ReviewJob
+	var jobs []*domain.ReviewJob
 	for _, f := range files {
-		var job shared.ReviewJob
+		var job domain.ReviewJob
 		if err := s.b.readJSON(f, &job); err != nil {
 			continue
 		}
-		if job.Status == shared.ReviewJobStatusReviewing &&
+		if job.Status == domain.ReviewJobStatusReviewing &&
 			job.StartedAt != nil && job.StartedAt.Before(cutoff) {
 			jobs = append(jobs, &job)
 		}
@@ -172,7 +172,7 @@ func (s *ReviewJobStore) ListStale(_ context.Context, olderThanMinutes int) ([]*
 	return jobs, nil
 }
 
-func (s *ReviewJobStore) ListByProject(_ context.Context, projectID int64, limit int) ([]*shared.ReviewJob, error) {
+func (s *ReviewJobStore) ListByProject(_ context.Context, projectID int64, limit int) ([]*domain.ReviewJob, error) {
 	s.b.mu.RLock()
 	defer s.b.mu.RUnlock()
 
@@ -181,9 +181,9 @@ func (s *ReviewJobStore) ListByProject(_ context.Context, projectID int64, limit
 		return nil, fmt.Errorf("list review jobs: %w", err)
 	}
 
-	var jobs []*shared.ReviewJob
+	var jobs []*domain.ReviewJob
 	for _, f := range files {
-		var job shared.ReviewJob
+		var job domain.ReviewJob
 		if err := s.b.readJSON(f, &job); err != nil {
 			continue
 		}

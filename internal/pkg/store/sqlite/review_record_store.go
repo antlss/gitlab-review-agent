@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/antlss/gitlab-review-agent/internal/shared"
+	"github.com/antlss/gitlab-review-agent/internal/domain"
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
@@ -21,8 +21,8 @@ func NewReviewRecordStore(db *sqlx.DB) *ReviewRecordStore {
 	return &ReviewRecordStore{db: db}
 }
 
-func (s *ReviewRecordStore) GetLastCompleted(ctx context.Context, projectID, mrIID int64) (*shared.ReviewRecord, error) {
-	var record shared.ReviewRecord
+func (s *ReviewRecordStore) GetLastCompleted(ctx context.Context, projectID, mrIID int64) (*domain.ReviewRecord, error) {
+	var record domain.ReviewRecord
 	err := s.db.GetContext(ctx, &record, `
 		SELECT * FROM review_records
 		WHERE gitlab_project_id = ? AND mr_iid = ?`,
@@ -36,7 +36,7 @@ func (s *ReviewRecordStore) GetLastCompleted(ctx context.Context, projectID, mrI
 	return &record, nil
 }
 
-func (s *ReviewRecordStore) Upsert(ctx context.Context, record *shared.ReviewRecord) error {
+func (s *ReviewRecordStore) Upsert(ctx context.Context, record *domain.ReviewRecord) error {
 	record.ID = uuid.New()
 	record.CreatedAt = time.Now()
 
