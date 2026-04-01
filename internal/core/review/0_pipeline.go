@@ -1,12 +1,13 @@
 package review
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 
@@ -112,19 +113,21 @@ func (p *Pipeline) Execute(ctx context.Context, job *shared.ReviewJob) error {
 	if len(filteredFiles) > p.cfg.Review.MaxFilesBeforeSample {
 		if p.cfg.Review.LargePRAction == "block" {
 			msg := fmt.Sprintf("MR has %d files (max %d). Skipping review.", len(filteredFiles), p.cfg.Review.MaxFilesBeforeSample)
-			p.gitlabClient.PostThreadComment(ctx, job.GitLabProjectID, job.MrIID, msg)
+			if _, err := p.gitlabClient.PostThreadComment(ctx, job.GitLabProjectID, job.MrIID, msg); err != nil {
+				log.Warn("failed to post skip comment", "error", err)
+			}
 			return p.jobStore.UpdateStatus(ctx, job.ID, shared.ReviewJobStatusSkippedSize, nil)
 		}
-		sort.Slice(filteredFiles, func(i, j int) bool {
-			return filteredFiles[i].RiskScore > filteredFiles[j].RiskScore
+		slices.SortFunc(filteredFiles, func(a, b shared.DiffFile) int {
+			return cmp.Compare(b.RiskScore, a.RiskScore) // descending
 		})
 		if len(filteredFiles) > p.cfg.Review.SampleFileCount {
 			filteredFiles = filteredFiles[:p.cfg.Review.SampleFileCount]
 		}
 	}
 
-	sort.Slice(filteredFiles, func(i, j int) bool {
-		return filteredFiles[i].RiskScore > filteredFiles[j].RiskScore
+	slices.SortFunc(filteredFiles, func(a, b shared.DiffFile) int {
+		return cmp.Compare(b.RiskScore, a.RiskScore) // descending
 	})
 
 	reviewCtx, err := p.gatherer.Gather(ctx, job, filteredFiles)
@@ -136,7 +139,9 @@ func (p *Pipeline) Execute(ctx context.Context, job *shared.ReviewJob) error {
 	if err != nil {
 		return p.failJob(ctx, job, "create LLM client: "+err.Error())
 	}
-	p.jobStore.UpdateModelUsed(ctx, job.ID, llmClient.ModelName())
+	if err := p.jobStore.UpdateModelUsed(ctx, job.ID, llmClient.ModelName()); err != nil {
+		log.Warn("failed to update model used", "error", err)
+	}
 
 	lang := prompt.ParseLanguage(p.cfg.Review.ResponseLanguage)
 
@@ -152,13 +157,17 @@ func (p *Pipeline) Execute(ctx context.Context, job *shared.ReviewJob) error {
 	}
 
 	comments := ValidateAndFilter(aggregated.parsed, filteredFiles, reviewCtx.ExistingUnresolvedComments)
-	p.jobStore.UpdateAIOutput(ctx, job.ID, aggregated.rawOutput, comments, aggregated.totalIterations, aggregated.totalTokens)
+	if err := p.jobStore.UpdateAIOutput(ctx, job.ID, aggregated.rawOutput, comments, aggregated.totalIterations, aggregated.totalTokens); err != nil {
+		log.Warn("failed to update AI output", "error", err)
+	}
 
 	if job.DryRun {
 		return p.jobStore.UpdateCompleted(ctx, job.ID, 0, 0)
 	}
 
-	p.jobStore.UpdateStatus(ctx, job.ID, shared.ReviewJobStatusPosting, nil)
+	if err := p.jobStore.UpdateStatus(ctx, job.ID, shared.ReviewJobStatusPosting, nil); err != nil {
+		log.Warn("failed to update status to POSTING", "error", err)
+	}
 	posted, suppressed := 0, 0
 	for i := range comments {
 		c := &comments[i]
@@ -211,9 +220,13 @@ func (p *Pipeline) Execute(ctx context.Context, job *shared.ReviewJob) error {
 	}
 
 	summary := buildSummaryComment(posted, suppressed, len(comments), resolved, aggregated, llmClient.ModelName(), lang)
-	p.gitlabClient.PostThreadComment(ctx, job.GitLabProjectID, job.MrIID, summary)
+	if _, err := p.gitlabClient.PostThreadComment(ctx, job.GitLabProjectID, job.MrIID, summary); err != nil {
+		log.Warn("failed to post summary comment", "error", err)
+	}
 
-	p.jobStore.UpdateCompleted(ctx, job.ID, posted, suppressed)
+	if err := p.jobStore.UpdateCompleted(ctx, job.ID, posted, suppressed); err != nil {
+		log.Warn("failed to update job completed", "error", err)
+	}
 
 	reviewedFiles := extractFilePaths(filteredFiles)
 	filesJSON, err := json.Marshal(reviewedFiles)
@@ -221,16 +234,20 @@ func (p *Pipeline) Execute(ctx context.Context, job *shared.ReviewJob) error {
 		log.Warn("failed to marshal reviewed files", "error", err)
 		filesJSON = []byte("[]")
 	}
-	p.recordStore.Upsert(ctx, &shared.ReviewRecord{
+	if err := p.recordStore.Upsert(ctx, &shared.ReviewRecord{
 		GitLabProjectID: job.GitLabProjectID,
 		MrIID:           job.MrIID,
 		ReviewJobID:     job.ID,
 		HeadSHA:         job.HeadSHA,
 		ReviewedFiles:   filesJSON,
 		CommentsPosted:  posted,
-	})
+	}); err != nil {
+		log.Warn("failed to upsert review record", "error", err)
+	}
 
-	p.repoSettings.IncrementFeedbackCount(ctx, job.GitLabProjectID, posted)
+	if err := p.repoSettings.IncrementFeedbackCount(ctx, job.GitLabProjectID, posted); err != nil {
+		log.Warn("failed to increment feedback count", "error", err)
+	}
 
 	log.Info("review completed", "posted", posted, "suppressed", suppressed,
 		"iterations", aggregated.totalIterations, "chunks", aggregated.chunksUsed)
@@ -263,6 +280,7 @@ func (p *Pipeline) executeSingle(
 	toolCfg := p.cfg.Tool
 	toolCfg.BaseSHA = baseSHA
 	toolCfg.HeadSHA = job.HeadSHA
+	toolCfg.GitEnv = p.gitManager.GitEnv()
 	registry := tools.NewRegistry(repoPath, filteredFiles, toolCfg)
 
 	preloadedDiffs, allPreloaded := p.preloadDiffsForFiles(ctx, job.GitLabProjectID, filteredFiles, baseSHA, job.HeadSHA)
@@ -333,20 +351,19 @@ func (p *Pipeline) executeChunked(
 
 	// Adaptive parallelism: scale with key count so we never exceed API capacity.
 	// Cap at the configured maximum to avoid overwhelming small instances.
-	clientConcurrency := llmClient.ClientCount() * 2
-	maxParallel := p.cfg.Review.MaxParallelChunks
-	if clientConcurrency < maxParallel {
-		maxParallel = clientConcurrency
-	}
-	if maxParallel < 1 {
-		maxParallel = 1
-	}
+	maxParallel := max(1, min(llmClient.ClientCount()*2, p.cfg.Review.MaxParallelChunks))
 	sem := make(chan struct{}, maxParallel)
 
 	for i, chunk := range chunks {
 		wg.Add(1)
 		go func(idx int, chunkFiles []shared.DiffFile) {
 			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					log.Error("chunk review panicked", "chunk", idx+1, "panic", r)
+					results[idx] = chunkResult{err: fmt.Errorf("chunk panicked: %v", r)}
+				}
+			}()
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
@@ -357,6 +374,7 @@ func (p *Pipeline) executeChunked(
 			toolCfg := p.cfg.Tool
 			toolCfg.BaseSHA = baseSHA
 			toolCfg.HeadSHA = job.HeadSHA
+			toolCfg.GitEnv = p.gitManager.GitEnv()
 			registry := tools.NewRegistry(repoPath, chunkFiles, toolCfg)
 
 			// For chunks, always preload all diffs (chunks are small enough)
@@ -533,7 +551,9 @@ func (p *Pipeline) autoResolveFixedThreads(ctx context.Context, job *shared.Revi
 
 func (p *Pipeline) failJob(ctx context.Context, job *shared.ReviewJob, msg string) error {
 	slog.Error("review job failed", "job_id", job.ID.String(), "error", msg)
-	p.jobStore.UpdateStatus(ctx, job.ID, shared.ReviewJobStatusFailed, &msg)
+	if err := p.jobStore.UpdateStatus(ctx, job.ID, shared.ReviewJobStatusFailed, &msg); err != nil {
+		slog.Error("failed to mark job as failed in store", "job_id", job.ID.String(), "store_error", err)
+	}
 	return errors.New(msg)
 }
 
@@ -547,7 +567,7 @@ func formatDiffStat(files []shared.DiffFile) string {
 		case shared.RiskMedium:
 			icon = "🟡"
 		}
-		sb.WriteString(fmt.Sprintf("%s %s (+%d/-%d) [%s]\n", icon, f.Path, f.LinesAdded, f.LinesRemoved, f.RiskTier))
+		fmt.Fprintf(&sb, "%s %s (+%d/-%d) [%s]\n", icon, f.Path, f.LinesAdded, f.LinesRemoved, f.RiskTier)
 	}
 	return sb.String()
 }
@@ -594,11 +614,11 @@ func buildSummaryComment(posted, suppressed, total, resolved int, result *aggreg
 		sb.WriteString(prompt.SummaryAutoResolved(lang, resolved))
 	}
 
-	sb.WriteString(fmt.Sprintf("- **Model:** %s\n", model))
+	fmt.Fprintf(&sb, "- **Model:** %s\n", model)
 	if result.chunksUsed > 1 {
-		sb.WriteString(fmt.Sprintf("- **Chunks:** %d (parallel map-reduce)\n", result.chunksUsed))
+		fmt.Fprintf(&sb, "- **Chunks:** %d (parallel map-reduce)\n", result.chunksUsed)
 	}
-	sb.WriteString(fmt.Sprintf("- **Iterations:** %d (stop: %s)\n", result.totalIterations, result.stopReason))
+	fmt.Fprintf(&sb, "- **Iterations:** %d (stop: %s)\n", result.totalIterations, result.stopReason)
 
 	if posted > 0 {
 		sb.WriteString(prompt.SummaryReplyHint(lang))
@@ -638,7 +658,7 @@ func (p *Pipeline) computePreloadedDiffs(ctx context.Context, projectID int64, f
 		header := fmt.Sprintf("--- %s ---\n", f.Path)
 		entry := header + compacted + "\n"
 		if totalBytes+len(entry) > maxBytes {
-			sb.WriteString(fmt.Sprintf("--- %s: (diff omitted — size limit reached) ---\n", f.Path))
+			fmt.Fprintf(&sb, "--- %s: (diff omitted — size limit reached) ---\n", f.Path)
 			continue
 		}
 		sb.WriteString(entry)

@@ -98,6 +98,7 @@ type GetMultiDiffTool struct {
 	maxKB     int
 	baseSHA   string
 	headSHA   string
+	gitEnv    []string // inherited git environment for token/config injection
 }
 
 func (t *GetMultiDiffTool) Name() string { return "get_multi_diff" }
@@ -138,19 +139,22 @@ func (t *GetMultiDiffTool) Execute(ctx context.Context, input shared.ToolInput) 
 			}
 		}
 		if !found {
-			result.WriteString(fmt.Sprintf("--- %s: not in MR diff ---\n", path))
+			fmt.Fprintf(&result, "--- %s: not in MR diff ---\n", path)
 			continue
 		}
 
 		// Run git diff for this file using the actual MR base..head range
 		cmd := exec.CommandContext(ctx, "git", "diff", t.baseSHA+".."+t.headSHA, "--", path)
 		cmd.Dir = t.rootPath
+		if len(t.gitEnv) > 0 {
+			cmd.Env = t.gitEnv
+		}
 		out, err := cmd.CombinedOutput()
 		if err != nil {
-			result.WriteString(fmt.Sprintf("--- %s: error getting diff ---\n", path))
+			fmt.Fprintf(&result, "--- %s: error getting diff ---\n", path)
 			continue
 		}
-		result.WriteString(fmt.Sprintf("--- %s ---\n%s\n", path, string(out)))
+		fmt.Fprintf(&result, "--- %s ---\n%s\n", path, string(out))
 	}
 
 	content := result.String()
@@ -198,8 +202,9 @@ func (t *SearchCodeTool) Execute(ctx context.Context, input shared.ToolInput) (*
 
 	args := []string{"-rn", "--max-count", strconv.Itoa(t.maxResults)}
 
-	caseSensitive, _ := input["case_sensitive"].(bool)
-	if !caseSensitive {
+	// Default to case-sensitive (grep's natural behavior).
+	// Only add -i when the caller explicitly sets case_sensitive=false.
+	if cs, ok := input["case_sensitive"].(bool); ok && !cs {
 		args = append(args, "-i")
 	}
 
@@ -265,22 +270,22 @@ func (t *ReadMultiFileTool) Execute(_ context.Context, input shared.ToolInput) (
 		}
 		absPath, err := securePath(t.rootPath, path)
 		if err != nil {
-			result.WriteString(fmt.Sprintf("--- %s: %s ---\n", path, err.Error()))
+			fmt.Fprintf(&result, "--- %s: %s ---\n", path, err.Error())
 			continue
 		}
 		info, err := os.Stat(absPath)
 		if err != nil {
-			result.WriteString(fmt.Sprintf("--- %s: not found ---\n", path))
+			fmt.Fprintf(&result, "--- %s: not found ---\n", path)
 			continue
 		}
 		if info.Size() > int64(t.perFileKB)*1024 {
-			result.WriteString(fmt.Sprintf("--- %s: too large (%d KB) ---\n", path, info.Size()/1024))
+			fmt.Fprintf(&result, "--- %s: too large (%d KB) ---\n", path, info.Size()/1024)
 			continue
 		}
 
 		content, err := os.ReadFile(absPath)
 		if err != nil {
-			result.WriteString(fmt.Sprintf("--- %s: read error ---\n", path))
+			fmt.Fprintf(&result, "--- %s: read error ---\n", path)
 			continue
 		}
 
@@ -289,7 +294,7 @@ func (t *ReadMultiFileTool) Execute(_ context.Context, input shared.ToolInput) (
 			lines = lines[:t.maxLines]
 			lines = append(lines, fmt.Sprintf("... (truncated at %d lines)", t.maxLines))
 		}
-		result.WriteString(fmt.Sprintf("--- %s ---\n%s\n\n", path, strings.Join(lines, "\n")))
+		fmt.Fprintf(&result, "--- %s ---\n%s\n\n", path, strings.Join(lines, "\n"))
 	}
 
 	return &shared.ToolResult{Content: result.String()}, nil

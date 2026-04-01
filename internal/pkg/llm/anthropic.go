@@ -54,7 +54,9 @@ func (c *AnthropicClient) Chat(ctx context.Context, req shared.ChatRequest) (*sh
 				}
 				for _, tc := range msg.ToolCalls {
 					var input any
-					json.Unmarshal([]byte(tc.InputJSON), &input)
+					if err := json.Unmarshal([]byte(tc.InputJSON), &input); err != nil {
+						return nil, fmt.Errorf("unmarshal tool input for %s: %w", tc.Name, err)
+					}
 					content = append(content, map[string]any{
 						"type":  "tool_use",
 						"id":    tc.ID,

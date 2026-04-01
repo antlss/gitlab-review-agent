@@ -31,25 +31,32 @@ func NewClient(baseURL, token string) *Client {
 }
 
 func (c *Client) doRequest(ctx context.Context, method, path string, body any) ([]byte, http.Header, error) {
-	var bodyReader io.Reader
+	var bodyData []byte
 	if body != nil {
-		data, err := json.Marshal(body)
+		var err error
+		bodyData, err = json.Marshal(body)
 		if err != nil {
 			return nil, nil, fmt.Errorf("marshal request body: %w", err)
 		}
-		bodyReader = bytes.NewReader(data)
 	}
 
 	url := c.baseURL + "/api/v4" + path
-	req, err := http.NewRequestWithContext(ctx, method, url, bodyReader)
-	if err != nil {
-		return nil, nil, fmt.Errorf("create request: %w", err)
-	}
-	req.Header.Set("PRIVATE-TOKEN", c.token)
-	req.Header.Set("Content-Type", "application/json")
 
 	var resp *http.Response
-	for attempt := 0; attempt < 3; attempt++ {
+	var lastErr error
+	for attempt := range 3 {
+		// Re-create the request on each attempt so the body reader is fresh.
+		var bodyReader io.Reader
+		if bodyData != nil {
+			bodyReader = bytes.NewReader(bodyData)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, url, bodyReader)
+		if err != nil {
+			return nil, nil, fmt.Errorf("create request: %w", err)
+		}
+		req.Header.Set("PRIVATE-TOKEN", c.token)
+		req.Header.Set("Content-Type", "application/json")
+
 		resp, err = c.httpClient.Do(req)
 		if err != nil {
 			return nil, nil, fmt.Errorf("http request: %w", err)
@@ -70,6 +77,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body any) (
 			case <-ctx.Done():
 				return nil, nil, ctx.Err()
 			}
+			lastErr = fmt.Errorf("rate limited (HTTP 429)")
 			continue
 		}
 		if resp.StatusCode >= 500 {
@@ -81,25 +89,26 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body any) (
 			case <-ctx.Done():
 				return nil, nil, ctx.Err()
 			}
+			lastErr = fmt.Errorf("server error (HTTP %d)", resp.StatusCode)
 			continue
 		}
-		break
-	}
-	if resp == nil {
-		return nil, nil, fmt.Errorf("all retries exhausted")
-	}
-	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, nil, fmt.Errorf("read response: %w", err)
-	}
-
-	if resp.StatusCode >= 400 {
-		return nil, nil, fmt.Errorf("gitlab api error %d: %s", resp.StatusCode, string(respBody))
+		// Success or non-retryable client error — read body and return.
+		respBody, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return nil, nil, fmt.Errorf("read response: %w", err)
+		}
+		if resp.StatusCode >= 400 {
+			return nil, nil, fmt.Errorf("gitlab api error %d: %s", resp.StatusCode, string(respBody))
+		}
+		return respBody, resp.Header, nil
 	}
 
-	return respBody, resp.Header, nil
+	if lastErr != nil {
+		return nil, nil, fmt.Errorf("all retries exhausted: %w", lastErr)
+	}
+	return nil, nil, fmt.Errorf("all retries exhausted")
 }
 
 func (c *Client) GetMR(ctx context.Context, projectID, mrIID int64) (*shared.GitLabMR, error) {
@@ -338,7 +347,7 @@ func (c *Client) ListAllProjects(ctx context.Context, minAccessLevel int) ([]Pro
 		path += fmt.Sprintf("&min_access_level=%d", minAccessLevel)
 	}
 
-	for page := 1; ; page++ {
+	for page := 1; ; {
 		pagePath := fmt.Sprintf("%s&page=%d", path, page)
 		data, headers, err := c.doRequest(ctx, http.MethodGet, pagePath, nil)
 		if err != nil {
@@ -361,7 +370,7 @@ func (c *Client) ListAllProjects(ctx context.Context, minAccessLevel int) ([]Pro
 			})
 		}
 
-		// GitLab sets X-Next-Page to "" or "0" on the last page
+		// GitLab sets X-Next-Page to "" on the last page.
 		next := headers.Get("X-Next-Page")
 		if next == "" || next == "0" {
 			break
@@ -370,7 +379,7 @@ func (c *Client) ListAllProjects(ctx context.Context, minAccessLevel int) ([]Pro
 		if err != nil || nextPage <= page {
 			break
 		}
-		page = nextPage - 1 // loop will increment
+		page = nextPage
 	}
 	return all, nil
 }

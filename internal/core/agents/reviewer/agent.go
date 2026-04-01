@@ -114,6 +114,13 @@ func (a *Agent) Run(ctx context.Context, input AgentInput) (*AgentResult, error)
 				wg.Add(1)
 				go func(i int, tc shared.ToolCall) {
 					defer wg.Done()
+					defer func() {
+						if r := recover(); r != nil {
+							slog.Error("tool execution panicked", "tool", tc.Name, "panic", r)
+							results[i] = execResult{callID: tc.ID, content: fmt.Sprintf("ERROR: tool panicked: %v", r)}
+						}
+					}()
+
 					var toolInput shared.ToolInput
 					if err := json.Unmarshal([]byte(tc.InputJSON), &toolInput); err != nil {
 						slog.Warn("failed to unmarshal tool input",

@@ -88,8 +88,9 @@ type ToolConfig struct {
 	ReadMultiFileMaxFiles  int
 	ReadMultiFilePerFileKB int
 	ToolResultMaxLines     int
-	BaseSHA                string `json:"-"` // Set per-job, not from env
-	HeadSHA                string `json:"-"` // Set per-job, not from env
+	BaseSHA                string   `json:"-"` // Set per-job, not from env
+	HeadSHA                string   `json:"-"` // Set per-job, not from env
+	GitEnv                 []string `json:"-"` // Set per-job, git environment for token injection
 }
 
 type CronConfig struct {

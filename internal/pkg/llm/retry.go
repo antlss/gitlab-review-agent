@@ -51,7 +51,7 @@ func doRequest(
 
 	slog.Debug("LLM API request", "method", method, "url", url, "payload_bytes", len(body))
 
-	for attempt := 0; attempt <= maxRetries; attempt++ {
+	for attempt := range maxRetries + 1 {
 		req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(body))
 		if err != nil {
 			return nil, fmt.Errorf("create request: %w", err)

@@ -56,7 +56,7 @@ func NewRegistry(rootPath string, diffFiles []shared.DiffFile, cfg config.ToolCo
 		Notes:     acc,
 	}
 	r.Register(&ReadFileTool{rootPath: rootPath, maxKB: cfg.ReadFileMaxKB, maxLines: cfg.ToolResultMaxLines})
-	r.Register(&GetMultiDiffTool{rootPath: rootPath, diffFiles: diffFiles, maxFiles: cfg.MultiDiffMaxFiles, maxKB: cfg.MultiDiffMaxKB, baseSHA: cfg.BaseSHA, headSHA: cfg.HeadSHA})
+	r.Register(&GetMultiDiffTool{rootPath: rootPath, diffFiles: diffFiles, maxFiles: cfg.MultiDiffMaxFiles, maxKB: cfg.MultiDiffMaxKB, baseSHA: cfg.BaseSHA, headSHA: cfg.HeadSHA, gitEnv: cfg.GitEnv})
 	r.Register(&SearchCodeTool{rootPath: rootPath, maxResults: cfg.SearchMaxResults})
 	r.Register(&ReadMultiFileTool{rootPath: rootPath, maxFiles: cfg.ReadMultiFileMaxFiles, perFileKB: cfg.ReadMultiFilePerFileKB, maxLines: cfg.ToolResultMaxLines})
 	r.Register(&ListDirTool{rootPath: rootPath})

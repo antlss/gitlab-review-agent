@@ -4,29 +4,34 @@ import (
 	"database/sql"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
-func StrPtr(s string) *string { return &s }
+// Ptr returns a pointer to the given value.
+func Ptr[T any](v T) *T { return &v }
 
-func DerefStr(p *string) string {
+// Deref returns the value pointed to, or the zero value if nil.
+func Deref[T any](p *T) T {
 	if p == nil {
-		return ""
+		var zero T
+		return zero
 	}
 	return *p
 }
 
-func DerefInt(p *int) int {
-	if p == nil {
-		return 0
-	}
-	return *p
-}
+// Deprecated aliases — kept for backward compatibility during migration.
+func StrPtr(s string) *string { return Ptr(s) }
+func DerefStr(p *string) string { return Deref(p) }
+func DerefInt(p *int) int { return Deref(p) }
 
+// Truncate shortens s to at most max runes, appending "..." if truncated.
+// Safe for multi-byte UTF-8 content (Vietnamese, Japanese, etc.).
 func Truncate(s string, max int) string {
-	if len(s) <= max {
+	if utf8.RuneCountInString(s) <= max {
 		return s
 	}
-	return s[:max] + "..."
+	runes := []rune(s)
+	return string(runes[:max]) + "..."
 }
 
 func NullTimeToString(t sql.NullTime) *string {

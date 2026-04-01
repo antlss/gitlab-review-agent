@@ -19,10 +19,13 @@ import (
 )
 
 const (
-	gitLockTimeout = 2 * time.Minute
+	gitLockTimeout  = 2 * time.Minute
 	cloneMaxRetries = 2
 	cloneRetryDelay = 3 * time.Second
 )
+
+// hunkHeaderRe matches unified diff hunk headers: @@ -old,count +new,count @@
+var hunkHeaderRe = regexp.MustCompile(`^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@`)
 
 type Manager struct {
 	reposDir    string
@@ -226,11 +229,10 @@ func (m *Manager) getAddedLines(ctx context.Context, repoPath, baseSHA, headSHA,
 	}
 
 	var lines []int
-	re := regexp.MustCompile(`^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@`)
 	scanner := bufio.NewScanner(strings.NewReader(out))
 	for scanner.Scan() {
 		line := scanner.Text()
-		matches := re.FindStringSubmatch(line)
+		matches := hunkHeaderRe.FindStringSubmatch(line)
 		if matches == nil {
 			continue
 		}
@@ -334,10 +336,11 @@ func (m *Manager) cloneWithRetry(ctx context.Context, cloneURL, repoPath string)
 	return lastErr
 }
 
-// gitEnv returns environment variables for git commands that inject the GitLab
+// GitEnv returns environment variables for git commands that inject the GitLab
 // token, http buffer, and HTTP/1.1 settings via GIT_CONFIG environment variables.
 // HTTP/1.1 is forced to avoid HTTP/2 stream errors with reverse proxies.
-func (m *Manager) gitEnv() []string {
+// Exported so that tool implementations can inherit the same git configuration.
+func (m *Manager) GitEnv() []string {
 	if m.gitlabToken == "" {
 		return append(os.Environ(),
 			"GIT_CONFIG_COUNT=2",
@@ -363,7 +366,7 @@ func (m *Manager) runGit(ctx context.Context, dir string, args ...string) error 
 	if dir != "" {
 		cmd.Dir = dir
 	}
-	cmd.Env = m.gitEnv()
+	cmd.Env = m.GitEnv()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("git %s: %s: %w", strings.Join(args, " "), string(out), err)
@@ -376,7 +379,7 @@ func (m *Manager) runGitOutput(ctx context.Context, dir string, args ...string) 
 	if dir != "" {
 		cmd.Dir = dir
 	}
-	cmd.Env = m.gitEnv()
+	cmd.Env = m.GitEnv()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("git %s: %s: %w", strings.Join(args, " "), string(out), err)

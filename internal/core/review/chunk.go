@@ -1,8 +1,9 @@
 package review
 
 import (
+	"cmp"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/antlss/gitlab-review-agent/internal/shared"
@@ -28,8 +29,8 @@ func ChunkFiles(files []shared.DiffFile, targetSize int) [][]shared.DiffFile {
 	groups := groupByDomain(files)
 
 	// Sort groups by total risk score (highest first) so the riskiest chunks run first
-	sort.Slice(groups, func(i, j int) bool {
-		return groupRiskScore(groups[i]) > groupRiskScore(groups[j])
+	slices.SortFunc(groups, func(a, b []shared.DiffFile) int {
+		return cmp.Compare(groupRiskScore(b), groupRiskScore(a)) // descending
 	})
 
 	// Balance groups into chunks of ~targetSize
