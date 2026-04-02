@@ -56,11 +56,11 @@ func SummaryLGTM() string {
 func SummaryAllFiltered(lang ResponseLanguage, count int) string {
 	switch lang {
 	case LangVI:
-		return fmt.Sprintf("✅ **Không có comment nào được đăng.** AI phát hiện %d vấn đề tiềm năng nhưng tất cả đã bị lọc (độ tin cậy thấp hoặc trùng lặp với comment hiện có).\n\n", count)
+		return fmt.Sprintf("✅ **Không có comment nào được đăng.** AI phát hiện %d vấn đề tiềm năng nhưng tất cả đã bị lọc (ví dụ: độ tin cậy thấp, trùng lặp, không đủ ảnh hưởng production, hoặc không actionable).\n\n", count)
 	case LangJA:
-		return fmt.Sprintf("✅ **コメントは投稿されませんでした。** AIが%d件の潜在的な問題を検出しましたが、すべてフィルタリングされました（低信頼度または既存コメントと重複）。\n\n", count)
+		return fmt.Sprintf("✅ **コメントは投稿されませんでした。** AIが%d件の潜在的な問題を検出しましたが、すべてフィルタリングされました（低信頼度、重複、本番影響不足、または非アクショナブルなど）。\n\n", count)
 	default:
-		return fmt.Sprintf("✅ **No comments posted.** AI found %d potential issues but all were filtered (low confidence or duplicate with existing comments).\n\n", count)
+		return fmt.Sprintf("✅ **No comments posted.** AI found %d potential issues but all were filtered (for example low confidence, duplicate, non-production, or non-actionable).\n\n", count)
 	}
 }
 
@@ -78,11 +78,11 @@ func SummaryPostedCount(lang ResponseLanguage, count int) string {
 func SummaryFilteredCount(lang ResponseLanguage, count int) string {
 	switch lang {
 	case LangVI:
-		return fmt.Sprintf("- **Bị lọc:** %d (độ tin cậy thấp hoặc trùng lặp)\n", count)
+		return fmt.Sprintf("- **Bị lọc:** %d (độ tin cậy thấp, trùng lặp, không đủ ảnh hưởng production, hoặc không actionable)\n", count)
 	case LangJA:
-		return fmt.Sprintf("- **フィルタリング:** %d（低信頼度または重複）\n", count)
+		return fmt.Sprintf("- **フィルタリング:** %d（低信頼度、重複、本番影響不足、または非アクショナブル）\n", count)
 	default:
-		return fmt.Sprintf("- **Filtered:** %d (low confidence or duplicate)\n", count)
+		return fmt.Sprintf("- **Filtered:** %d (low confidence, duplicate, non-production, or non-actionable)\n", count)
 	}
 }
 

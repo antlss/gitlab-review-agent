@@ -137,12 +137,12 @@ func (s *ReviewJobStore) UpdateModelUsed(ctx context.Context, id uuid.UUID, mode
 func (s *ReviewJobStore) ExistsPendingOrCompleted(ctx context.Context, projectID, mrIID int64, headSHA string, withinMinutes int) (bool, error) {
 	var exists bool
 	err := s.db.GetContext(ctx, &exists, `
-		SELECT EXISTS(
-			SELECT 1 FROM review_jobs
-			WHERE gitlab_project_id = $1 AND mr_iid = $2 AND head_sha = $3
-			AND status IN ('PENDING', 'REVIEWING', 'COMPLETED')
-			AND created_at > NOW() - make_interval(mins := $4)
-		)`, projectID, mrIID, headSHA, withinMinutes)
+			SELECT EXISTS(
+				SELECT 1 FROM review_jobs
+				WHERE gitlab_project_id = $1 AND mr_iid = $2 AND head_sha = $3
+				AND status IN ('PENDING', 'REVIEWING', 'POSTING', 'COMPLETED')
+				AND created_at > NOW() - make_interval(mins := $4)
+			)`, projectID, mrIID, headSHA, withinMinutes)
 	if err != nil {
 		return false, fmt.Errorf("check existing job: %w", err)
 	}

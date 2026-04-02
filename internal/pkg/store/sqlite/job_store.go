@@ -150,10 +150,10 @@ func (s *ReviewJobStore) ExistsPendingOrCompleted(ctx context.Context, projectID
 	cutoff := time.Now().Add(-time.Duration(withinMinutes) * time.Minute).Format(time.RFC3339)
 	var count int
 	err := s.db.GetContext(ctx, &count, `
-		SELECT COUNT(*) FROM review_jobs
-		WHERE gitlab_project_id = ? AND mr_iid = ? AND head_sha = ?
-		AND status IN ('PENDING', 'REVIEWING', 'COMPLETED')
-		AND created_at > ?`,
+			SELECT COUNT(*) FROM review_jobs
+			WHERE gitlab_project_id = ? AND mr_iid = ? AND head_sha = ?
+			AND status IN ('PENDING', 'REVIEWING', 'POSTING', 'COMPLETED')
+			AND created_at > ?`,
 		projectID, mrIID, headSHA, cutoff)
 	if err != nil {
 		return false, fmt.Errorf("check existing job: %w", err)

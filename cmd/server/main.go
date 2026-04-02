@@ -35,6 +35,10 @@ func main() {
 	)
 
 	cfg := do.MustInvoke[*config.Config](injector)
+	if err := cfg.ValidateForServer(); err != nil {
+		slog.Error("invalid server configuration", "error", err)
+		os.Exit(1)
+	}
 	slog.Info("starting ai-review-agent server", "store_driver", cfg.Store.Driver)
 
 	ctx, cancel := context.WithCancel(context.Background())

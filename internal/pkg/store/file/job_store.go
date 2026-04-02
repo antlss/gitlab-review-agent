@@ -140,6 +140,7 @@ func (s *ReviewJobStore) ExistsPendingOrCompleted(_ context.Context, projectID, 
 		if job.GitLabProjectID == projectID && job.MrIID == mrIID && job.HeadSHA == headSHA &&
 			(job.Status == domain.ReviewJobStatusPending ||
 				job.Status == domain.ReviewJobStatusReviewing ||
+				job.Status == domain.ReviewJobStatusPosting ||
 				job.Status == domain.ReviewJobStatusCompleted) &&
 			job.CreatedAt.After(cutoff) {
 			return true, nil

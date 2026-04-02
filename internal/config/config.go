@@ -49,7 +49,7 @@ type GitLabConfig struct {
 }
 
 type LLMConfig struct {
-	DefaultProvider      string   // "openai" | "anthropic" | "google"
+	DefaultProvider      string // "openai" | "anthropic" | "google"
 	DefaultModel         string
 	OpenAIAPIKey         string   // primary key (first from OpenAIAPIKeys)
 	OpenAIAPIKeys        []string // all keys for load balancing
@@ -75,9 +75,9 @@ type ReviewConfig struct {
 	PreloadDiffMaxKB     int    // max total KB of pre-injected diff content (default 100)
 	ResponseLanguage     string // "en" | "vi" | "ja" — language for AI-generated GitLab comments/replies
 	TriggerLabel         string // MR label that triggers review (default "ai-review")
-	ChunkSize            int    // target files per chunk for map-reduce review (default 10)
-	MaxParallelChunks    int    // max concurrent chunk reviews (default 5)
-	ChunkThreshold       int    // file count above which chunking is enabled (default 12)
+	ChunkSize            int    // deprecated: legacy chunked review setting, ignored by unified review flow
+	MaxParallelChunks    int    // deprecated: legacy chunked review setting, ignored by unified review flow
+	ChunkThreshold       int    // deprecated: legacy chunked review setting, ignored by unified review flow
 }
 
 type ToolConfig struct {
@@ -160,13 +160,7 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("GITLAB_TOKEN is required")
 	}
 	cfg.GitLab.WebhookSecret = os.Getenv("GITLAB_WEBHOOK_SECRET")
-	if cfg.GitLab.WebhookSecret == "" {
-		return nil, fmt.Errorf("GITLAB_WEBHOOK_SECRET is required")
-	}
 	cfg.GitLab.BotUserID = int64(envIntOrDefault("GITLAB_BOT_USER_ID", 0))
-	if cfg.GitLab.BotUserID == 0 {
-		return nil, fmt.Errorf("GITLAB_BOT_USER_ID is required")
-	}
 
 	cfg.Git.ReposDir = envOrDefault("GIT_REPOS_DIR", "resource/repos")
 
@@ -213,6 +207,23 @@ func Load() (*Config, error) {
 	cfg.Log.Format = strings.ToLower(envOrDefault("LOG_FORMAT", "json"))
 
 	return cfg, nil
+}
+
+func (c *Config) ValidateForServer() error {
+	if c.GitLab.WebhookSecret == "" {
+		return fmt.Errorf("GITLAB_WEBHOOK_SECRET is required")
+	}
+	if c.GitLab.BotUserID == 0 {
+		return fmt.Errorf("GITLAB_BOT_USER_ID is required")
+	}
+	return nil
+}
+
+func (c *Config) ValidateForReview() error {
+	if c.GitLab.BotUserID == 0 {
+		return fmt.Errorf("GITLAB_BOT_USER_ID is required")
+	}
+	return nil
 }
 
 func firstOrEmpty(s []string) string {

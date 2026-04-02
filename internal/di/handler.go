@@ -55,6 +55,9 @@ func provideCronRunner(i do.Injector) (*cron.Runner, error) {
 // ProvideWebhookHandler creates the webhook handler with the given server context.
 func ProvideWebhookHandler(i do.Injector) (*webhook.Handler, error) {
 	cfg := do.MustInvoke[*config.Config](i)
+	if err := cfg.ValidateForServer(); err != nil {
+		return nil, err
+	}
 	return webhook.NewHandler(webhook.HandlerDeps{
 		WebhookSecret:      cfg.GitLab.WebhookSecret,
 		BotUserID:          cfg.GitLab.BotUserID,

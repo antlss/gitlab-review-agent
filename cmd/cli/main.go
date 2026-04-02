@@ -62,6 +62,9 @@ func reviewCmd() *cobra.Command {
 			)
 
 			cfg := do.MustInvoke[*config.Config](injector)
+			if err := cfg.ValidateForReview(); err != nil {
+				return fmt.Errorf("config: %w", err)
+			}
 			stores := do.MustInvoke[*store.Stores](injector)
 			defer stores.Close()
 

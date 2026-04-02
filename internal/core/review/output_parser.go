@@ -86,15 +86,35 @@ func parseJSONScan(s string) (*ParsedOutput, error) {
 
 	depth := 0
 	end := -1
+	inString := false
+	escaped := false
+scan:
 	for i := start; i < len(s); i++ {
-		if s[i] == '{' {
-			depth++
+		ch := s[i]
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			switch ch {
+			case '\\':
+				escaped = true
+			case '"':
+				inString = false
+			}
+			continue
 		}
-		if s[i] == '}' {
+
+		switch ch {
+		case '"':
+			inString = true
+		case '{':
+			depth++
+		case '}':
 			depth--
 			if depth == 0 {
 				end = i + 1
-				break
+				break scan
 			}
 		}
 	}
@@ -125,11 +145,6 @@ func ValidateAndFilter(
 		existingSet[key] = true
 	}
 
-	validCategories := map[string]bool{
-		"security": true, "bug": true, "logic": true,
-		"performance": true, "naming": true, "style": true,
-	}
-
 	validSeverities := map[string]domain.CommentSeverity{
 		"critical": domain.SeverityCritical,
 		"high":     domain.SeverityHigh,
@@ -149,10 +164,6 @@ func ValidateAndFilter(
 			Category:      domain.CommentCategory(strings.ToLower(r.Category)),
 			Severity:      domain.CommentSeverity(strings.ToLower(r.Severity)),
 			Suggestion:    r.Suggestion,
-		}
-
-		if !validCategories[string(comment.Category)] {
-			comment.Category = domain.CategoryLogic
 		}
 
 		if _, ok := validSeverities[string(comment.Severity)]; !ok {
@@ -188,6 +199,21 @@ func ValidateAndFilter(
 			comment.DropReason = "low_confidence"
 		}
 
+		if !comment.Suppressed && !isAllowedFinalCategory(string(comment.Category)) {
+			comment.Suppressed = true
+			comment.DropReason = "non_production_category"
+		}
+
+		if !comment.Suppressed && comment.Severity == domain.SeverityLow {
+			comment.Suppressed = true
+			comment.DropReason = "low_severity"
+		}
+
+		if !comment.Suppressed && isNonActionableReviewComment(comment.ReviewComment) {
+			comment.Suppressed = true
+			comment.DropReason = "non_actionable"
+		}
+
 		dedupKey := fmt.Sprintf("%s:%d:%s", comment.FilePath, comment.LineNumber, comment.Category)
 		if seen[dedupKey] {
 			comment.Suppressed = true
@@ -199,4 +225,41 @@ func ValidateAndFilter(
 	}
 
 	return results
+}
+
+func isAllowedFinalCategory(category string) bool {
+	switch strings.ToLower(strings.TrimSpace(category)) {
+	case "security", "bug", "logic", "performance":
+		return true
+	default:
+		return false
+	}
+}
+
+func isNonActionableReviewComment(comment string) bool {
+	lower := strings.ToLower(strings.TrimSpace(comment))
+	if lower == "" {
+		return true
+	}
+	if strings.HasSuffix(lower, "?") {
+		return true
+	}
+
+	phrases := []string{
+		"please check",
+		"should check",
+		"needs verification",
+		"requires deeper audit",
+		"could you verify",
+		"hãy kiểm tra",
+		"kiểm tra lại",
+		"cần kiểm tra",
+		"xác nhận lại",
+	}
+	for _, phrase := range phrases {
+		if strings.Contains(lower, phrase) {
+			return true
+		}
+	}
+	return false
 }

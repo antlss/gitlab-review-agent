@@ -14,10 +14,9 @@ import (
 	"github.com/antlss/gitlab-review-agent/internal/config"
 	"github.com/antlss/gitlab-review-agent/internal/core/agents/reviewer"
 	"github.com/antlss/gitlab-review-agent/internal/core/prompt"
+	"github.com/antlss/gitlab-review-agent/internal/domain"
 	"github.com/antlss/gitlab-review-agent/internal/pkg/git"
 	"github.com/antlss/gitlab-review-agent/internal/pkg/llm"
-	"github.com/antlss/gitlab-review-agent/internal/pkg/tools"
-	"github.com/antlss/gitlab-review-agent/internal/domain"
 )
 
 type Pipeline struct {
@@ -145,13 +144,10 @@ func (p *Pipeline) Execute(ctx context.Context, job *domain.ReviewJob) error {
 
 	lang := prompt.ParseLanguage(p.cfg.Review.ResponseLanguage)
 
-	// Decide: single-pass vs chunked map-reduce review
+	// Review all sampled files in a single unified pass so the model keeps full
+	// cross-file context instead of relying on chunk boundaries.
 	var aggregated *aggregatedResult
-	if len(filteredFiles) > p.cfg.Review.ChunkThreshold {
-		aggregated, err = p.executeChunked(ctx, job, filteredFiles, reviewCtx, llmClient, baseSHA, lang)
-	} else {
-		aggregated, err = p.executeSingle(ctx, job, filteredFiles, reviewCtx, llmClient, baseSHA, lang)
-	}
+	aggregated, err = p.executeSingle(ctx, job, filteredFiles, reviewCtx, llmClient, baseSHA, lang)
 	if err != nil {
 		return p.failJob(ctx, job, "agent: "+err.Error())
 	}
@@ -276,52 +272,25 @@ func (p *Pipeline) executeSingle(
 ) (*aggregatedResult, error) {
 	log := slog.With("job_id", job.ID.String())
 
-	repoPath := p.gitManager.RepoPath(job.GitLabProjectID)
-	toolCfg := p.cfg.Tool
-	toolCfg.BaseSHA = baseSHA
-	toolCfg.HeadSHA = job.HeadSHA
-	toolCfg.GitEnv = p.gitManager.GitEnv()
-	registry := tools.NewRegistry(repoPath, filteredFiles, toolCfg)
+	log.Info("single-pass structured review", "files", len(filteredFiles), "passes", 2)
 
-	preloadedDiffs, allPreloaded := p.preloadDiffsForFiles(ctx, job.GitLabProjectID, filteredFiles, baseSHA, job.HeadSHA)
-
-	maxIter, softWarn := CalculateBudgetWithPreload(len(filteredFiles), preloadedDiffs != "")
-	log.Info("single-pass review", "files", len(filteredFiles),
-		"preloaded_bytes", len(preloadedDiffs), "all_preloaded", allPreloaded, "max_iterations", maxIter)
-
-	agentInput := reviewer.AgentInput{
-		Job:                  job,
-		ReviewCtx:            reviewCtx,
-		FilteredFiles:        filteredFiles,
-		DiffStatFormatted:    formatDiffStat(filteredFiles),
-		MaxIterations:        maxIter,
-		SoftWarnAt:           softWarn,
-		CompressionThreshold: p.cfg.LLM.CompressionThreshold,
-		Registry:             registry,
-		LLMClient:            llmClient,
-		PreloadedDiffs:       preloadedDiffs,
-		AllDiffsPreloaded:    allPreloaded,
-		ResponseLanguage:     lang,
-	}
-
-	result, err := p.agent.Run(ctx, agentInput)
+	result, err := p.runStructuredChunkReview(ctx, job, filteredFiles, reviewCtx, llmClient, baseSHA, lang)
 	if err != nil {
 		return nil, err
 	}
 
-	parsed, err := Parse(result.RawOutput)
-	if err != nil {
-		p.jobStore.UpdateAIOutput(ctx, job.ID, result.RawOutput, nil, result.IterationsUsed, result.TokensEstimated)
-		return nil, fmt.Errorf("parse failed: %w", err)
+	if result.parsed == nil {
+		p.jobStore.UpdateAIOutput(ctx, job.ID, result.rawOutput, nil, result.llmCalls, result.tokensEstimated)
+		return nil, fmt.Errorf("structured review returned no parsed output")
 	}
 
 	return &aggregatedResult{
-		parsed:          parsed,
-		rawOutput:       result.RawOutput,
-		totalIterations: result.IterationsUsed,
-		totalTokens:     result.TokensEstimated,
+		parsed:          result.parsed,
+		rawOutput:       result.rawOutput,
+		totalIterations: result.llmCalls,
+		totalTokens:     result.tokensEstimated,
 		chunksUsed:      1,
-		stopReason:      result.StopReason,
+		stopReason:      result.stopReason,
 	}, nil
 }
 
@@ -370,53 +339,26 @@ func (p *Pipeline) executeChunked(
 			chunkLog := log.With("chunk", idx+1, "chunk_files", len(chunkFiles))
 			chunkLog.Info("chunk review started", "files", extractFilePaths(chunkFiles))
 
-			repoPath := p.gitManager.RepoPath(job.GitLabProjectID)
-			toolCfg := p.cfg.Tool
-			toolCfg.BaseSHA = baseSHA
-			toolCfg.HeadSHA = job.HeadSHA
-			toolCfg.GitEnv = p.gitManager.GitEnv()
-			registry := tools.NewRegistry(repoPath, chunkFiles, toolCfg)
+			chunkLog.Info("chunk structured review", "passes", 2)
 
-			// For chunks, always preload all diffs (chunks are small enough)
-			preloadedDiffs, allPreloaded := p.preloadDiffsForFiles(ctx, job.GitLabProjectID, chunkFiles, baseSHA, job.HeadSHA)
-
-			maxIter, softWarn := CalculateBudgetWithPreload(len(chunkFiles), preloadedDiffs != "")
-			chunkLog.Info("chunk budget", "max_iterations", maxIter,
-				"preloaded_bytes", len(preloadedDiffs), "all_preloaded", allPreloaded)
-
-			agentInput := reviewer.AgentInput{
-				Job:                  job,
-				ReviewCtx:            reviewCtx,
-				FilteredFiles:        chunkFiles,
-				DiffStatFormatted:    formatDiffStat(chunkFiles),
-				MaxIterations:        maxIter,
-				SoftWarnAt:           softWarn,
-				CompressionThreshold: p.cfg.LLM.CompressionThreshold,
-				Registry:             registry,
-				LLMClient:            llmClient,
-				PreloadedDiffs:       preloadedDiffs,
-				AllDiffsPreloaded:    allPreloaded,
-				ResponseLanguage:     lang,
-			}
-
-			result, err := p.agent.Run(ctx, agentInput)
+			result, err := p.runStructuredChunkReview(ctx, job, chunkFiles, reviewCtx, llmClient, baseSHA, lang)
 			if err != nil {
 				chunkLog.Error("chunk review failed", "error", err)
 				results[idx] = chunkResult{err: err}
 				return
 			}
 
-			parsed, err := Parse(result.RawOutput)
-			if err != nil {
-				chunkLog.Warn("chunk parse failed", "error", err)
-				// Store raw output but don't fail the whole review
-				results[idx] = chunkResult{result: result, err: nil, parsed: &ParsedOutput{}}
-				return
-			}
-
 			chunkLog.Info("chunk review completed",
-				"iterations", result.IterationsUsed, "findings", len(parsed.Reviews))
-			results[idx] = chunkResult{result: result, parsed: parsed}
+				"iterations", result.llmCalls, "findings", len(result.parsed.Reviews))
+			results[idx] = chunkResult{
+				parsed: result.parsed,
+				result: &reviewer.AgentResult{
+					RawOutput:       result.rawOutput,
+					IterationsUsed:  result.llmCalls,
+					TokensEstimated: result.tokensEstimated,
+					StopReason:      result.stopReason,
+				},
+			}
 		}(i, chunk)
 	}
 
@@ -502,11 +444,21 @@ func (p *Pipeline) determineBaseSHA(ctx context.Context, job *domain.ReviewJob, 
 		return p.gitManager.RevParse(ctx, job.GitLabProjectID, "origin/"+job.TargetBranch)
 	}
 
-	if p.gitManager.SHAExists(ctx, job.GitLabProjectID, record.HeadSHA) {
+	if !p.gitManager.SHAExists(ctx, job.GitLabProjectID, record.HeadSHA) {
+		slog.Info("incremental base SHA not found, using target branch",
+			"project_id", job.GitLabProjectID, "mr_iid", job.MrIID)
+		return p.gitManager.RevParse(ctx, job.GitLabProjectID, "origin/"+job.TargetBranch)
+	}
+
+	ancestor, err := p.gitManager.IsAncestor(ctx, job.GitLabProjectID, record.HeadSHA, job.HeadSHA)
+	if err != nil {
+		return "", fmt.Errorf("check incremental ancestry: %w", err)
+	}
+	if ancestor {
 		return record.HeadSHA, nil
 	}
 
-	slog.Info("incremental base SHA not found, using target branch",
+	slog.Info("incremental base SHA is not an ancestor, using target branch",
 		"project_id", job.GitLabProjectID, "mr_iid", job.MrIID)
 	return p.gitManager.RevParse(ctx, job.GitLabProjectID, "origin/"+job.TargetBranch)
 }

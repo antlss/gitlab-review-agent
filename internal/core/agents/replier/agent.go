@@ -22,15 +22,15 @@ func NewAgent() *Agent {
 }
 
 type ReplyInput struct {
-	Job              *domain.ReplyJob
-	MR               *domain.GitLabMR
-	ThreadHistory    string
-	CodeContext      string
+	Job               *domain.ReplyJob
+	MR                *domain.GitLabMR
+	ThreadHistory     string
+	CodeContext       string
 	LatestCodeContext string
-	CustomPrompt     *string
-	Intent           domain.ReplyIntent
-	DetectedLang     string
-	ResponseLanguage prompt.ResponseLanguage
+	CustomPrompt      *string
+	Intent            domain.ReplyIntent
+	DetectedLang      string
+	ResponseLanguage  prompt.ResponseLanguage
 }
 
 // GenerateReply makes a single LLM call to generate a reply.
@@ -89,15 +89,13 @@ func (a *Agent) buildUserMessage(input ReplyInput) string {
 	}
 	sb.WriteString(fmt.Sprintf("Comment: %s\n\n", input.Job.BotCommentContent))
 
-	if input.CodeContext != "" {
-		sb.WriteString("## Relevant Code (at review time)\n```\n")
-		sb.WriteString(input.CodeContext)
-		sb.WriteString("\n```\n\n")
-	}
-
-	if input.LatestCodeContext != "" && input.LatestCodeContext != input.CodeContext {
+	if input.LatestCodeContext != "" {
 		sb.WriteString("## Latest Code (HEAD) — use this to verify if the issue was actually fixed\n```\n")
 		sb.WriteString(input.LatestCodeContext)
+		sb.WriteString("\n```\n\n")
+	} else if input.CodeContext != "" {
+		sb.WriteString("## Relevant Code Around Comment\n```\n")
+		sb.WriteString(input.CodeContext)
 		sb.WriteString("\n```\n\n")
 	}
 

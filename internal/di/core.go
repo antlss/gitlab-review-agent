@@ -65,7 +65,7 @@ func provideReplyPipeline(i do.Injector) (*reply.Pipeline, error) {
 		FeedbackStore: do.MustInvoke[domain.FeedbackStore](i),
 		GitLabClient:  do.MustInvoke[domain.GitLabClient](i),
 		ReplyAgent:    do.MustInvoke[*replier.Agent](i),
-		ReposDir:      cfg.Git.ReposDir,
+		RepoManager:   do.MustInvoke[*git.Manager](i),
 	}), nil
 }
 

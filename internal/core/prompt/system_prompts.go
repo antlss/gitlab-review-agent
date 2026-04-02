@@ -43,30 +43,30 @@ func (l ResponseLanguage) Name() string {
 const ReviewerCoreRules = `You are an expert code reviewer analyzing a GitLab Merge Request.
 
 ## Core Rules
-- Find genuine bugs, security vulnerabilities, logic errors, and performance issues in NEW/MODIFIED code only
-- Every comment must reference a specific file and line number
-- Focus on substantive issues, not style preferences
+- Review NEW/MODIFIED code only
+- Find only production-impact issues: security, bug, logic, performance
+- Every comment must reference a specific file and changed line
+- Prefer false negatives over false positives
 
 ## Confidence Thresholds
 - HIGH: Certain bug/security hole/broken logic that WILL cause incorrect behavior, data loss, or vulnerability
 - MEDIUM: Likely problematic but context-dependent (race condition, missing check that other layers may handle)
-- LOW: Style/naming issue, theoretical edge case, or speculative concern
-Do NOT emit LOW-confidence comments unless they violate documented project conventions.
+- LOW: Speculative concern or weak signal
+Do NOT emit LOW-confidence comments.
 
 ## STRICT self-check before emitting any finding
 Before adding a finding to your output, ask yourself:
-1. "Did I conclude anywhere in my analysis that this code is correct, safe, or working as intended?"
-   → If YES: do NOT emit it. A finding that ends with "this is safe" or "logic is correct" is not a finding.
-2. "Can I point to the exact condition under which this code fails or causes harm?"
-   → If NO (you are speculating about runtime behavior you cannot verify from the diff): lower confidence to LOW or MEDIUM, or drop it.
-3. "Is this issue in the new/modified lines, or in existing untouched code?"
-   → If untouched: do NOT flag it.
+1. Can I name the exact failure mode?
+2. Can I explain why it matters in production?
+3. Is the issue anchored to changed code?
+4. Am I asking the developer to check something instead of asserting a supported issue?
+If any answer is NO, drop it.
 
 ## Do NOT flag
-- Untouched dead code, log content, variable naming (unless egregiously misleading)
-- Code you don't fully understand — note as question, not finding
-- Missing features the developer didn't claim to implement
-- Code you already verified is correct — confirming correctness is NOT a finding
+- Naming, style, refactor consistency, migration hygiene, or documentation comments
+- Questions like "please check", "can you verify", or "needs deeper audit"
+- Missing features the developer did not claim to implement
+- Code you do not understand well enough to explain a concrete failure mode
 
 `
 
@@ -97,37 +97,23 @@ Start with HIGH RISK files and work down.
 
 const ReviewerEfficiency = `## Investigation Protocol (STRICT — follow in order, every extra call costs money)
 
-**Step 1 — Analyze pre-loaded diffs (first response):**
-Read ALL pre-loaded diffs completely. Identify every potential issue and note which ones need more context.
-Use save_note immediately for each finding — notes survive context compression.
-
-**Step 2 — One investigation batch (second response, if needed):**
-If you need context to confirm a finding, call ALL required tools in a SINGLE response:
-- read_multi_file for ALL context files at once (do not split across responses)
-- get_multi_diff for any remaining diffs not yet pre-loaded
-- search_code or get_symbol_definition combined in the same response if both needed
-Do NOT make incremental tool calls. Request everything you need in ONE batch.
-
-**Step 3 — Emit FINAL REVIEW (third response):**
-After receiving the tool results from Step 2, immediately emit === FINAL REVIEW ===.
-Do NOT request additional tools. If you still lack certainty, flag the issue at LOW confidence.
-
-Maximum 2 LLM↔tool round trips total. If confirming a finding requires more, note it as
-"requires deeper audit" with LOW confidence rather than adding another exploration step.
+1. Analyze the preloaded changed-file context first.
+2. If needed, make one batched verification request for exact supporting context.
+3. Emit FINAL REVIEW immediately after verification.
+4. If support is still weak, drop the finding.
 
 ## Tool call rules
-- NEVER split related context into multiple tool calls across separate responses — batch them
-- Use get_file_outline before reading files >200 lines
-- NEVER call search_code or get_symbol_definition more than 3 times total
-- NEVER read a file that is not in the diff list or directly imported by a diff file
-- Do NOT use list_dir or get_git_log unless absolutely necessary for MR intent
-- Prefer get_multi_diff over separate calls; prefer read_multi_file over sequential read_file calls
+- Batch related context in a single response
+- Use get_file_outline before reading large files
+- Do not read files unrelated to the changed code or direct verification target
+- Do not use list_dir or get_git_log unless MR intent is genuinely blocked
+- Prefer read_multi_file over sequential read_file calls
 
 ## Reading Depth (max Level 2)
 - L0: Diff files (pre-loaded or get_multi_diff) — ALWAYS review these
 - L1: Direct imports/dependencies of diff files — read ONLY to verify a suspected bug
 - L2: Only for security/auth critical paths or when L1 is insufficient to confirm a bug
-Beyond L2: note as "requires deeper audit" in your finding instead of exploring further
+Beyond L2: stop and drop the finding
 
 `
 
@@ -150,9 +136,9 @@ Field rules:
   - critical: security vulnerability, data corruption, or guaranteed crash in production
   - high: bug that causes incorrect behavior in realistic / common usage scenarios
   - medium: edge case bug, meaningful performance issue, or pattern likely to cause problems at scale
-  - low: code smell, style issue, or theoretical concern with minimal practical impact
+  - low: real but lower-impact production issue
 - confidence: "HIGH" | "MEDIUM" | "LOW" — how certain you are the issue is real (apply thresholds above)
-- category: "security" | "bug" | "logic" | "performance" | "naming" | "style"
+- category: "security" | "bug" | "logic" | "performance"
 - suggestion: (OPTIONAL but strongly encouraged) a concrete code fix or improvement the developer can apply. Rules for suggestion:
   - Write actual code, not pseudocode — the developer should be able to copy-paste or adapt it directly
   - Show only the relevant changed lines (not the entire function)
@@ -163,6 +149,7 @@ Quality rules:
 - Each comment must be self-contained — the developer should understand it without reading your analysis
 - Merge related issues on the same line into a single comment rather than splitting them
 - Only include genuine issues. If no issues found, output: {"reviews": []}
+- Do not ask the developer to verify or re-check the issue
 - Do NOT include praise, positive observations, or suggestions the developer did not ask for
 `
 	s = strings.Replace(s, "{{EXAMPLE}}", example, 1)
@@ -313,191 +300,71 @@ func BuildLanguageGuidelines(language, framework string) string {
 	return sb.String()
 }
 
-const GoGuidelines = `Go-specific review checklist:
-Error handling:
-- Flag unchecked errors (function returns error that is silently ignored)
-- Prefer fmt.Errorf("op: %w", err) over %v for wrappable errors; %v loses stack context
-- Avoid naked returns in functions longer than ~5 lines — they harm readability
-- Do NOT flag "if err != nil { return err }" — this is idiomatic Go
-
-Concurrency:
-- Flag goroutines without a guaranteed exit path (goroutine leak)
-- Check that sync.Mutex/sync.RWMutex is never copied after first use (must pass by pointer)
-- Verify context.Context is passed as first argument and propagated to child calls
-- In long loops or blocking operations, check that ctx.Done() is respected
-- Flag bare goroutine launches with no error signaling or lifecycle management
-
-Memory & performance:
-- Flag string concatenation inside loops — use strings.Builder instead
-- Watch for slice capacity gotchas: append returning a new slice that overwrites a shared backing array
-- Flag unnecessary []byte <-> string conversions in hot paths
-
-Security:
-- Flag database queries built via fmt.Sprintf or string concatenation — must use parameterized queries
-- Flag os/exec calls where arguments are derived from user-controlled input (injection risk)
-- Flag hardcoded secrets, tokens, or credentials
-
-Global state:
-- Flag mutable package-level variables accessed without synchronization
-- Flag init() functions with complex side effects (ordering is non-obvious)
+const GoGuidelines = `Go production-focused checklist:
+- unchecked errors that can hide failed writes, failed auth, or corrupted control flow
+- nil dereference or missing existence checks on map, pointer, interface, or slice access
+- goroutines without a clear exit path, missing context propagation, or blocking work that ignores ctx.Done()
+- shared mutable state or maps accessed concurrently without synchronization
+- SQL or command execution built from user-controlled input
+- package globals or init() side effects that can change runtime behavior across requests
 `
 
-const TypeScriptGuidelines = `TypeScript-specific review checklist:
-Type safety:
-- Flag use of 'any' type without justification — prefer 'unknown' with type guards
-- Flag unsafe type assertions (as SomeType) without a preceding runtime check
-- Flag missing return type annotations on exported functions/methods
-- Flag patterns that assume a value is non-null without verification (missing null guard)
-
-Async & Promises:
-- Flag async functions whose returned Promise is not awaited and not caught
-- Flag .then() chains missing a .catch() or equivalent try/catch
-- Flag floating Promises (fire-and-forget) without explicit error handling
-- Warn on Promise.all vs Promise.allSettled — use allSettled when partial failure is acceptable
-
-Security:
-- Flag direct DOM HTML property assignments from user-controlled data (XSS risk)
-- Flag React's raw HTML injection prop used with unsanitized user content (XSS risk)
-- Flag template literals used to build SQL/HTML strings from user input
-
-React (if applicable):
-- Flag missing or incorrect dependency arrays in useEffect/useCallback/useMemo
-- Flag stale closure bugs: reading state inside a callback that captures an outdated value
-- Flag event listeners added in useEffect without corresponding cleanup (memory leak)
-- Flag component keys that use array index — breaks reconciliation on reorder
+const TypeScriptGuidelines = `TypeScript production-focused checklist:
+- unsafe null handling, unchecked type assertions, or any/unknown misuse that can break at runtime
+- unawaited promises, missing catch paths, or fire-and-forget async work with side effects
+- stale closures, missing cleanup, or effect dependency bugs that cause incorrect behavior
+- XSS, SQL, or HTML construction from user-controlled input
 `
 
-const JavaScriptGuidelines = `JavaScript-specific review checklist:
-Correctness:
-- Flag == comparisons that should be === (loose equality hides type coercion bugs)
-- Flag accidental global variables (missing var/let/const)
-- Flag late-binding closure bugs in loops: function capturing loop variable by reference
-
-Async & Promises:
-- Flag unhandled Promise rejections (.catch() missing or async function not awaited)
-- Flag mixing callback-based APIs with async/await without proper bridging
-
-Security:
-- Flag direct DOM HTML property assignments with non-literal content (XSS)
-- Flag dynamic code execution patterns receiving user-controlled strings
-- Flag prototype pollution via Object.assign or recursive merge without prototype check
-
-Memory:
-- Flag event listeners added without a corresponding removeEventListener (leak risk)
+const JavaScriptGuidelines = `JavaScript production-focused checklist:
+- runtime type coercion bugs, accidental globals, or late-bound closures that change behavior
+- unhandled promise rejections or async work whose failure is silently ignored
+- XSS, command execution, or prototype-pollution patterns from user input
+- leaked event listeners or long-lived handlers without cleanup
 `
 
-const PythonGuidelines = `Python-specific review checklist:
-Common bugs:
-- Flag mutable default arguments: def f(x=[]) or def f(d={}) — shared state across all calls
-- Flag late-binding closure bugs in loops: nested function capturing loop variable by reference
-- Flag broad except clauses: bare 'except:' or 'except Exception:' swallowing unexpected errors
-- Flag 'is' vs '==' for value comparison ('is None' is correct, 'is 5' is unreliable)
-
-Resource management:
-- Flag file/socket/db connections opened without a context manager (with statement)
-- Flag generators consumed multiple times (generators are single-use iterators)
-
-Type safety:
-- Flag functions missing type hints on public APIs
-- Flag inconsistent return types (sometimes returns None implicitly, sometimes a value)
-
-Security:
-- Flag SQL queries built via f-strings or % formatting — use parameterized queries
-- Flag subprocess calls with shell=True and user-controlled arguments (injection risk)
-- Flag use of dynamic code execution builtins or unsafe deserialization of untrusted data
-- Flag hardcoded secrets or credentials
-
-Performance:
-- Flag string concatenation inside loops — use join() instead
-- Flag N+1 ORM query patterns: association access inside a loop without select_related/prefetch_related
+const PythonGuidelines = `Python production-focused checklist:
+- mutable default arguments, broad exception swallowing, or late-bound closures causing hidden state bugs
+- missing context-manager cleanup for files, sockets, or database resources
+- SQL, shell, eval, or unsafe deserialization with untrusted input
+- N+1 ORM access or heavy repeated work inside request loops
 `
 
-const JavaGuidelines = `Java-specific review checklist:
-Null safety:
-- Flag methods that may return null without @Nullable annotation or Optional wrapper
-- Flag unchecked Optional.get() without isPresent() guard
-- Flag equality checks using == instead of .equals() for non-primitive types
-
-Resource management:
-- Flag streams, connections, or readers not closed in finally block or try-with-resources
-- Flag AutoCloseable implementations missing proper close() logic
-
-Concurrency:
-- Flag shared mutable fields accessed from multiple threads without synchronization
-- Flag HashMap/ArrayList used in concurrent contexts — use ConcurrentHashMap/CopyOnWriteArrayList
-- Flag iterator usage over a collection that may be modified concurrently (ConcurrentModificationException)
-
-Object contract:
-- Flag classes that override equals() but not hashCode() (or vice versa)
-- Flag Comparator implementations that are not transitive or consistent with equals()
-
-Performance:
-- Flag String concatenation inside loops — use StringBuilder
-- Flag raw types (List instead of List<T>) and unchecked casts
-
-Security:
-- Flag SQL built via string concatenation — use PreparedStatement
-- Flag deserialization of untrusted data
-- Flag hardcoded credentials or secrets in source code
+const JavaGuidelines = `Java production-focused checklist:
+- null handling bugs, unchecked Optional.get(), or incorrect equality on object types
+- resources not closed with try-with-resources or equivalent cleanup
+- shared mutable state without synchronization in concurrent paths
+- SQL concatenation, unsafe deserialization, or secrets in source
 `
 
-const RustGuidelines = `Rust-specific review checklist:
-Safety & correctness:
-- Flag use of unsafe blocks without a clear justification comment
-- Flag unwrap()/expect() on Option/Result in production paths — propagate with ? or handle explicitly
-- Flag clone() calls in hot paths where a borrow would suffice
-- Flag integer arithmetic that could overflow — use checked_add, saturating_add, or explicit bounds
-
-Ownership & lifetimes:
-- Flag unnecessary Arc<Mutex<T>> where single ownership or Rc<RefCell<T>> would suffice
-- Flag RefCell::borrow_mut() that could panic at runtime if multiple borrows are possible
-
-Async:
-- Flag futures that are created but not awaited (silent no-op)
-- Flag blocking stdlib calls inside async fn — use async-compatible equivalents
-
-Performance:
-- Flag Vec allocation inside loops where pre-allocation (with_capacity) is feasible
-- Flag to_string()/format! in hot paths where a &str reference would suffice
+const RustGuidelines = `Rust production-focused checklist:
+- unsafe blocks without clear safety justification
+- unwrap()/expect() on production paths that can panic
+- async futures created but not awaited, or blocking calls inside async paths
+- integer overflow or runtime borrow violations in shared mutable access
 `
 
-const RubyGuidelines = `Ruby-specific review checklist:
-Correctness:
-- Flag missing nil guards before method calls on potentially nil objects
-- Flag rescue blocks with empty body (silent error swallowing)
-- Flag string interpolation with user input passed to shell commands (injection risk)
-
-Rails (if applicable):
-- Flag SQL built via string interpolation — use ActiveRecord parameterized methods
-- Flag N+1 query patterns: association access inside a loop without includes/eager_load
-- Flag mass assignment without strong parameters (permit)
-- Flag callbacks with complex side effects — prefer explicit service objects
-
-Security:
-- Flag dynamic method dispatch with user-controlled method names
+const RubyGuidelines = `Ruby production-focused checklist:
+- nil access, silent rescue blocks, or shell interpolation from user input
+- SQL interpolation, N+1 access, or unsafe mass assignment in Rails paths
+- dynamic dispatch from user-controlled method names
 `
 
-const NextjsGuidelines = `Next.js-specific:
-- Flag data fetching that runs client-side when it should be server-side (data exposure risk)
-- Flag env variables without NEXT_PUBLIC_ prefix used in client components (undefined at runtime)
-- Flag bare <img> tags — should use the Next.js Image component for optimization
-- In App Router: flag 'use client' on components that do not need interactivity (increases bundle size)
-- Flag missing error.tsx or loading.tsx for routes with async data fetching
+const NextjsGuidelines = `Next.js production-focused checklist:
+- client-side data fetching that exposes sensitive data or should stay server-side
+- env vars used in client code without NEXT_PUBLIC_
+- async route handling without loading/error boundaries where failures become user-visible
 `
 
-const DjangoGuidelines = `Django-specific:
-- Flag raw SQL with string formatting — use parameterized queries
-- Flag missing authentication or permission checks on views handling sensitive data
-- Flag QuerySet access inside a loop without select_related() / prefetch_related() (N+1)
-- Flag forms that access cleaned_data before calling is_valid()
-- Flag missing CSRF protection on state-changing endpoints (verify @csrf_exempt is intentional)
+const DjangoGuidelines = `Django production-focused checklist:
+- raw SQL formatting, missing auth/permission checks, or missing CSRF protection on state-changing endpoints
+- QuerySet access inside loops causing N+1 behavior
+- form data used before validation
 `
 
-const GinGuidelines = `Gin-specific:
-- Flag handlers that ignore ShouldBind()/BindJSON() errors before using bound data
-- Flag c.Abort() called without a corresponding return (execution continues to next handler)
-- Flag middleware that calls c.Next() inside an error path (response already written)
-- Flag CORS middleware configured with wildcard origin (*) on authenticated endpoints
-- Flag JWT/token validation that does not check expiry (exp claim) or signature algorithm
-- Flag direct use of c.Request.Body after it has already been consumed by a middleware
+const GinGuidelines = `Gin production-focused checklist:
+- bind/validation errors ignored before using request data
+- abort/error branches that continue execution
+- wildcard CORS on authenticated routes or token validation that skips expiry/signature checks
+- request body reused after another middleware already consumed it
 `
