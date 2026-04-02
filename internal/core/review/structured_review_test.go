@@ -6,6 +6,33 @@ import (
 	"github.com/antlss/gitlab-review-agent/internal/domain"
 )
 
+func TestParseExtractionOutputFromPrettyPrintedFence(t *testing.T) {
+	input := "Candidate extraction:\n```json\n{\n  \"candidates\": [\n    {\n      \"filePath\": \"a.go\",\n      \"lineNumber\": 12,\n      \"summary\": \"stale permission cache after write\",\n      \"severity\": \"high\",\n      \"confidence\": \"HIGH\",\n      \"category\": \"logic\",\n      \"failureMode\": \"the read path can serve stale permissions until another sync occurs\",\n      \"productionImpact\": \"users can be authorized with outdated permission data\",\n      \"needsVerification\": false,\n      \"verification\": {\n        \"paths\": [],\n        \"symbols\": [],\n        \"patterns\": []\n      }\n    }\n  ]\n}\n```"
+
+	output, err := parseExtractionOutput(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(output.Candidates) != 1 {
+		t.Fatalf("expected 1 candidate, got %d", len(output.Candidates))
+	}
+	if output.Candidates[0].FilePath != "a.go" || output.Candidates[0].LineNumber != 12 {
+		t.Fatalf("unexpected parsed candidate: %+v", output.Candidates[0])
+	}
+}
+
+func TestExtractJSONForKeyWithNestedPrettyPrintedObject(t *testing.T) {
+	input := "prefix\n```json\n{\n  \"meta\": \"ignored\",\n  \"candidates\": []\n}\n```\nsuffix"
+
+	jsonBlob, err := extractJSONForKey(input, "candidates")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if jsonBlob == "" {
+		t.Fatal("expected extracted JSON blob")
+	}
+}
+
 func TestFilterExtractedCandidates(t *testing.T) {
 	candidates := []extractedCandidate{
 		{

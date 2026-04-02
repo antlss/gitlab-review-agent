@@ -376,23 +376,28 @@ func parseExtractionOutput(raw string) (*extractionOutput, error) {
 
 func extractJSONForKey(s, key string) (string, error) {
 	s = strings.TrimSpace(s)
-	patterns := []string{
-		fmt.Sprintf(`{"%s"`, key),
-		fmt.Sprintf(`{ "%s"`, key),
+	for start := 0; start < len(s); start++ {
+		if s[start] != '{' {
+			continue
+		}
+
+		end, ok := scanJSONObjectEnd(s, start)
+		if !ok {
+			continue
+		}
+
+		candidate := s[start:end]
+		if jsonObjectHasKey(candidate, key) {
+			return candidate, nil
+		}
 	}
 
-	start := -1
-	for _, pattern := range patterns {
-		start = strings.Index(s, pattern)
-		if start >= 0 {
-			break
-		}
-	}
-	if start == -1 {
-		if fenced, err := extractFromFence(s, key); err == nil {
-			return fenced, nil
-		}
-		return "", fmt.Errorf("no %s key found", key)
+	return "", fmt.Errorf("no JSON object containing %s key found", key)
+}
+
+func scanJSONObjectEnd(s string, start int) (int, bool) {
+	if start < 0 || start >= len(s) || s[start] != '{' {
+		return 0, false
 	}
 
 	depth := 0
@@ -431,26 +436,19 @@ scan:
 	}
 
 	if end == -1 {
-		return "", fmt.Errorf("no matching brace for %s", key)
+		return 0, false
 	}
 
-	return s[start:end], nil
+	return end, true
 }
 
-func extractFromFence(s, key string) (string, error) {
-	re := strings.Split(s, "```")
-	for _, section := range re {
-		section = strings.TrimSpace(section)
-		if !strings.Contains(section, key) {
-			continue
-		}
-		start := strings.Index(section, "{")
-		if start == -1 {
-			continue
-		}
-		return extractJSONForKey(section[start:], key)
+func jsonObjectHasKey(raw, key string) bool {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &obj); err != nil {
+		return false
 	}
-	return "", fmt.Errorf("no fenced json for %s", key)
+	_, ok := obj[key]
+	return ok
 }
 
 func filterExtractedCandidates(
