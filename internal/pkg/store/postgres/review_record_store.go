@@ -43,14 +43,20 @@ func (s *ReviewRecordStore) Upsert(ctx context.Context, record *domain.ReviewRec
 	_, err := s.db.NamedExecContext(ctx, `
 		INSERT INTO review_records (
 			id, gitlab_project_id, mr_iid, review_job_id,
-			head_sha, reviewed_files, comments_posted, created_at
+			head_sha, review_mode, prompt_version, policy_version,
+			model_plan_version, reviewed_files, comments_posted, created_at
 		) VALUES (
 			:id, :gitlab_project_id, :mr_iid, :review_job_id,
-			:head_sha, :reviewed_files, :comments_posted, :created_at
+			:head_sha, :review_mode, :prompt_version, :policy_version,
+			:model_plan_version, :reviewed_files, :comments_posted, :created_at
 		)
 		ON CONFLICT ON CONSTRAINT uq_review_records_mr DO UPDATE SET
 			review_job_id = EXCLUDED.review_job_id,
 			head_sha = EXCLUDED.head_sha,
+			review_mode = EXCLUDED.review_mode,
+			prompt_version = EXCLUDED.prompt_version,
+			policy_version = EXCLUDED.policy_version,
+			model_plan_version = EXCLUDED.model_plan_version,
 			reviewed_files = EXCLUDED.reviewed_files,
 			comments_posted = EXCLUDED.comments_posted,
 			created_at = EXCLUDED.created_at

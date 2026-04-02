@@ -12,8 +12,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/antlss/gitlab-review-agent/internal/pkg/queue"
 	"github.com/antlss/gitlab-review-agent/internal/domain"
+	"github.com/antlss/gitlab-review-agent/internal/pkg/queue"
 )
 
 type Handler struct {
@@ -184,12 +184,17 @@ func (h *Handler) handleMREvent(ctx context.Context, body []byte) {
 		SourceBranch:        attrs.SourceBranch,
 		TriggerSource:       domain.TriggerSourceWebhook,
 		Status:              domain.ReviewJobStatusPending,
+		PromptVersion:       domain.Ptr(domain.DefaultPromptVersion),
+		PolicyVersion:       domain.Ptr(domain.DefaultPolicyVersion),
+		ModelPlanVersion:    domain.Ptr(domain.DefaultModelPlanVersion),
 		RepoModelOverride:   settings.ModelOverride,
 		RepoLanguage:        settings.Language,
 		RepoFramework:       settings.Framework,
 		RepoExcludePatterns: settings.ExcludePatterns,
 		QueuedAt:            time.Now(),
 	}
+
+	domain.EnsureReviewJobVersionDefaults(job)
 
 	if err := h.reviewJobStore.Create(ctx, job); err != nil {
 		slog.Error("create review job", "error", err)

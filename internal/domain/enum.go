@@ -69,6 +69,17 @@ const (
 	IntentAcknowledge ReplyIntent = "acknowledge"
 )
 
+type ThreadState string
+
+const (
+	ThreadStateOpen                ThreadState = "open"
+	ThreadStateAcknowledged        ThreadState = "acknowledged"
+	ThreadStatePendingVerification ThreadState = "pending_verification"
+	ThreadStateResolved            ThreadState = "resolved"
+	ThreadStateDismissed           ThreadState = "dismissed"
+	ThreadStateSuperseded          ThreadState = "superseded"
+)
+
 type RiskTier string
 
 const (
@@ -82,4 +93,10 @@ type QueueJobType string
 const (
 	QueueJobTypeReview QueueJobType = "review"
 	QueueJobTypeReply  QueueJobType = "reply"
+)
+
+const (
+	DefaultPromptVersion    = "review-prompt-v1"
+	DefaultPolicyVersion    = "review-policy-v1"
+	DefaultModelPlanVersion = "review-model-plan-v1"
 )

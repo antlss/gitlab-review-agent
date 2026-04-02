@@ -27,6 +27,7 @@ func (s *ReviewJobStore) Create(ctx context.Context, job *domain.ReviewJob) erro
 		return fmt.Errorf("review job ID must be set before calling Create")
 	}
 	now := time.Now()
+	domain.EnsureReviewJobVersionDefaults(job)
 	job.CreatedAt = now
 	job.UpdatedAt = now
 	if job.QueuedAt.IsZero() {
@@ -37,13 +38,15 @@ func (s *ReviewJobStore) Create(ctx context.Context, job *domain.ReviewJob) erro
 		INSERT INTO review_jobs (
 			id, gitlab_project_id, mr_iid, head_sha, base_sha,
 			target_branch, source_branch, is_force_push, dry_run,
-			trigger_source, status, repo_model_override, repo_language,
+			trigger_source, status, review_mode, prompt_version, policy_version,
+			model_plan_version, findings_budget, repo_model_override, repo_language,
 			repo_framework, repo_exclude_patterns,
 			queued_at, created_at, updated_at
 		) VALUES (
 			:id, :gitlab_project_id, :mr_iid, :head_sha, :base_sha,
 			:target_branch, :source_branch, :is_force_push, :dry_run,
-			:trigger_source, :status, :repo_model_override, :repo_language,
+			:trigger_source, :status, :review_mode, :prompt_version, :policy_version,
+			:model_plan_version, :findings_budget, :repo_model_override, :repo_language,
 			:repo_framework, :repo_exclude_patterns,
 			:queued_at, :created_at, :updated_at
 		)`, job)
@@ -89,6 +92,16 @@ func (s *ReviewJobStore) UpdateBaseSHA(ctx context.Context, id uuid.UUID, baseSH
 		baseSHA, id)
 	if err != nil {
 		return fmt.Errorf("update base sha: %w", err)
+	}
+	return nil
+}
+
+func (s *ReviewJobStore) UpdateSessionMetadata(ctx context.Context, id uuid.UUID, reviewMode, promptVersion, policyVersion, modelPlanVersion string, findingsBudget int) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE review_jobs SET review_mode = $1, prompt_version = $2, policy_version = $3, model_plan_version = $4, findings_budget = $5, updated_at = NOW() WHERE id = $6`,
+		reviewMode, promptVersion, policyVersion, modelPlanVersion, findingsBudget, id)
+	if err != nil {
+		return fmt.Errorf("update session metadata: %w", err)
 	}
 	return nil
 }

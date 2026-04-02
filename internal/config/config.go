@@ -75,9 +75,11 @@ type ReviewConfig struct {
 	PreloadDiffMaxKB     int    // max total KB of pre-injected diff content (default 100)
 	ResponseLanguage     string // "en" | "vi" | "ja" — language for AI-generated GitLab comments/replies
 	TriggerLabel         string // MR label that triggers review (default "ai-review")
-	ChunkSize            int    // deprecated: legacy chunked review setting, ignored by unified review flow
-	MaxParallelChunks    int    // deprecated: legacy chunked review setting, ignored by unified review flow
-	ChunkThreshold       int    // deprecated: legacy chunked review setting, ignored by unified review flow
+	ChunkSize            int    // files per review chunk when chunked mode is selected
+	MaxParallelChunks    int    // max concurrent chunk reviews
+	ChunkThreshold       int    // minimum file count that switches review mode from unified to chunked
+	TriageThreshold      int    // minimum file count that switches review mode from chunked to triage
+	MaxFindings          int    // maximum number of unsuppressed findings posted per review
 }
 
 type ToolConfig struct {
@@ -188,7 +190,9 @@ func Load() (*Config, error) {
 	cfg.Review.TriggerLabel = envOrDefault("REVIEW_TRIGGER_LABEL", "ai-review")
 	cfg.Review.ChunkSize = envIntOrDefault("REVIEW_CHUNK_SIZE", 10)
 	cfg.Review.MaxParallelChunks = envIntOrDefault("REVIEW_MAX_PARALLEL_CHUNKS", 5)
-	cfg.Review.ChunkThreshold = envIntOrDefault("REVIEW_CHUNK_THRESHOLD", 12)
+	cfg.Review.ChunkThreshold = envIntOrDefault("REVIEW_CHUNK_THRESHOLD", 21)
+	cfg.Review.TriageThreshold = envIntOrDefault("REVIEW_TRIAGE_THRESHOLD", 81)
+	cfg.Review.MaxFindings = envIntOrDefault("REVIEW_MAX_FINDINGS", 10)
 
 	cfg.Tool.ReadFileMaxKB = envIntOrDefault("TOOL_READ_FILE_MAX_KB", 30)
 	cfg.Tool.SearchMaxResults = envIntOrDefault("TOOL_SEARCH_MAX_RESULTS", 20)

@@ -37,12 +37,14 @@ func (s *ReplyJobStore) Create(ctx context.Context, job *domain.ReplyJob) error 
 			id, gitlab_project_id, mr_iid, discussion_id,
 			trigger_note_id, trigger_note_content, trigger_note_author,
 			bot_comment_id, bot_comment_content, bot_comment_file_path,
-			bot_comment_line, status, queued_at, created_at, updated_at
+			bot_comment_line, status, thread_state_before, thread_state_after,
+			queued_at, created_at, updated_at
 		) VALUES (
 			:id, :gitlab_project_id, :mr_iid, :discussion_id,
 			:trigger_note_id, :trigger_note_content, :trigger_note_author,
 			:bot_comment_id, :bot_comment_content, :bot_comment_file_path,
-			:bot_comment_line, :status, :queued_at, :created_at, :updated_at
+			:bot_comment_line, :status, :thread_state_before, :thread_state_after,
+			:queued_at, :created_at, :updated_at
 		)`, job)
 	if err != nil {
 		return fmt.Errorf("create reply job: %w", err)
@@ -79,13 +81,14 @@ func (s *ReplyJobStore) UpdateStatus(ctx context.Context, id uuid.UUID, status d
 	return nil
 }
 
-func (s *ReplyJobStore) UpdateCompleted(ctx context.Context, id uuid.UUID, reply string, intent domain.ReplyIntent, signal domain.FeedbackSignal) error {
+func (s *ReplyJobStore) UpdateCompleted(ctx context.Context, id uuid.UUID, reply string, intent domain.ReplyIntent, signal domain.FeedbackSignal, beforeState, afterState domain.ThreadState) error {
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE reply_jobs SET
 			status = $1, reply_content = $2, intent_classified = $3,
-			feedback_signal = $4, completed_at = NOW(), updated_at = NOW()
-		WHERE id = $5`,
-		domain.ReplyJobStatusCompleted, reply, intent, signal, id)
+			feedback_signal = $4, thread_state_before = $5, thread_state_after = $6,
+			completed_at = NOW(), updated_at = NOW()
+		WHERE id = $7`,
+		domain.ReplyJobStatusCompleted, reply, intent, signal, beforeState, afterState, id)
 	if err != nil {
 		return fmt.Errorf("update reply completed: %w", err)
 	}

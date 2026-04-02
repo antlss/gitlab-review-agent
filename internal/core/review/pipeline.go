@@ -144,15 +144,32 @@ func (p *Pipeline) Execute(ctx context.Context, job *domain.ReviewJob) error {
 
 	lang := prompt.ParseLanguage(p.cfg.Review.ResponseLanguage)
 
-	// Review all sampled files in a single unified pass so the model keeps full
-	// cross-file context instead of relying on chunk boundaries.
+	plan := PlanReview(PlanInput{
+		ChunkThreshold:  p.cfg.Review.ChunkThreshold,
+		TriageThreshold: p.cfg.Review.TriageThreshold,
+		SampleFileCount: p.cfg.Review.SampleFileCount,
+		MaxFindings:     p.cfg.Review.MaxFindings,
+	}, filteredFiles)
+	job.ReviewMode = domain.Ptr(string(plan.Mode))
+	job.FindingsBudget = domain.Ptr(plan.FindingsBudget)
+	domain.EnsureReviewJobVersionDefaults(job)
+	if err := p.jobStore.UpdateSessionMetadata(ctx, job.ID, domain.DerefStr(job.ReviewMode), domain.DerefStr(job.PromptVersion), domain.DerefStr(job.PolicyVersion), domain.DerefStr(job.ModelPlanVersion), domain.DerefInt(job.FindingsBudget)); err != nil {
+		log.Warn("failed to update session metadata", "error", err)
+	}
+
 	var aggregated *aggregatedResult
-	aggregated, err = p.executeSingle(ctx, job, filteredFiles, reviewCtx, llmClient, baseSHA, lang)
+	switch plan.Mode {
+	case ReviewModeChunked:
+		aggregated, err = p.executeChunked(ctx, job, plan.Files, reviewCtx, llmClient, baseSHA, lang)
+	default:
+		aggregated, err = p.executeSingle(ctx, job, plan.Files, reviewCtx, llmClient, baseSHA, lang)
+	}
 	if err != nil {
 		return p.failJob(ctx, job, "agent: "+err.Error())
 	}
 
-	comments := ValidateAndFilter(aggregated.parsed, filteredFiles, reviewCtx.ExistingUnresolvedComments)
+	comments := ValidateAndFilter(aggregated.parsed, plan.Files, reviewCtx.ExistingUnresolvedComments)
+	comments = applyFindingsBudget(comments, plan.Files, plan.FindingsBudget)
 	if err := p.jobStore.UpdateAIOutput(ctx, job.ID, aggregated.rawOutput, comments, aggregated.totalIterations, aggregated.totalTokens); err != nil {
 		log.Warn("failed to update AI output", "error", err)
 	}
@@ -193,16 +210,23 @@ func (p *Pipeline) Execute(ctx context.Context, job *domain.ReviewJob) error {
 		posted++
 
 		fb := &domain.ReviewFeedback{
-			GitLabProjectID:    job.GitLabProjectID,
-			ReviewJobID:        &job.ID,
-			GitLabDiscussionID: resp.DiscussionID,
-			GitLabNoteID:       resp.NoteID,
-			FilePath:           &c.FilePath,
-			LineNumber:         &c.LineNumber,
-			Category:           &c.Category,
-			CommentSummary:     domain.StrPtr(domain.Truncate(c.ReviewComment, 200)),
-			Language:           domain.StrPtr(reviewCtx.DetectedLanguage),
-			ModelUsed:          domain.StrPtr(llmClient.ModelName()),
+			GitLabProjectID:     job.GitLabProjectID,
+			ReviewJobID:         &job.ID,
+			GitLabDiscussionID:  resp.DiscussionID,
+			GitLabNoteID:        resp.NoteID,
+			ReviewMode:          job.ReviewMode,
+			PromptVersion:       job.PromptVersion,
+			PolicyVersion:       job.PolicyVersion,
+			ModelPlanVersion:    job.ModelPlanVersion,
+			FilePath:            &c.FilePath,
+			LineNumber:          &c.LineNumber,
+			Category:            &c.Category,
+			CommentSummary:      domain.StrPtr(domain.Truncate(c.ReviewComment, 200)),
+			ContentHash:         domain.StrPtr(c.ContentHash),
+			SemanticFingerprint: domain.StrPtr(c.SemanticFingerprint),
+			LocationFingerprint: domain.StrPtr(c.LocationFingerprint),
+			Language:            domain.StrPtr(reviewCtx.DetectedLanguage),
+			ModelUsed:           domain.StrPtr(llmClient.ModelName()),
 		}
 		if err := p.feedbackStore.Create(ctx, fb); err != nil {
 			log.Warn("failed to create feedback", "error", err)
@@ -210,7 +234,7 @@ func (p *Pipeline) Execute(ctx context.Context, job *domain.ReviewJob) error {
 	}
 
 	// Auto-resolve previous bot threads where the flagged line was modified in this diff
-	resolved := p.autoResolveFixedThreads(ctx, job, reviewCtx.BotUnresolvedComments, filteredFiles)
+	resolved := p.autoResolveFixedThreads(ctx, job, reviewCtx.BotUnresolvedComments, plan.Files)
 	if resolved > 0 {
 		log.Info("auto-resolved fixed threads", "count", resolved)
 	}
@@ -224,19 +248,23 @@ func (p *Pipeline) Execute(ctx context.Context, job *domain.ReviewJob) error {
 		log.Warn("failed to update job completed", "error", err)
 	}
 
-	reviewedFiles := extractFilePaths(filteredFiles)
+	reviewedFiles := extractFilePaths(plan.Files)
 	filesJSON, err := json.Marshal(reviewedFiles)
 	if err != nil {
 		log.Warn("failed to marshal reviewed files", "error", err)
 		filesJSON = []byte("[]")
 	}
 	if err := p.recordStore.Upsert(ctx, &domain.ReviewRecord{
-		GitLabProjectID: job.GitLabProjectID,
-		MrIID:           job.MrIID,
-		ReviewJobID:     job.ID,
-		HeadSHA:         job.HeadSHA,
-		ReviewedFiles:   filesJSON,
-		CommentsPosted:  posted,
+		GitLabProjectID:  job.GitLabProjectID,
+		MrIID:            job.MrIID,
+		ReviewJobID:      job.ID,
+		HeadSHA:          job.HeadSHA,
+		ReviewMode:       job.ReviewMode,
+		PromptVersion:    job.PromptVersion,
+		PolicyVersion:    job.PolicyVersion,
+		ModelPlanVersion: job.ModelPlanVersion,
+		ReviewedFiles:    filesJSON,
+		CommentsPosted:   posted,
 	}); err != nil {
 		log.Warn("failed to upsert review record", "error", err)
 	}

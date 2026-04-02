@@ -131,7 +131,16 @@ func (p *Pipeline) Execute(ctx context.Context, job *domain.ReplyJob) error {
 		return p.failJob(ctx, job, "post reply: "+err.Error())
 	}
 
-	if err := p.feedbackStore.UpdateSignal(ctx, job.BotCommentID, signal, job.TriggerNoteContent); err != nil {
+	feedback, err := p.feedbackStore.GetByNoteID(ctx, job.BotCommentID)
+	if err != nil {
+		log.Warn("failed to load feedback for thread state", "bot_comment_id", job.BotCommentID, "error", err)
+	}
+	beforeState, afterState := domain.ComputeThreadState(nil, intent)
+	if feedback != nil {
+		beforeState, afterState = domain.ComputeThreadState(feedback.ThreadState, intent)
+	}
+
+	if err := p.feedbackStore.UpdateSignal(ctx, job.BotCommentID, signal, job.TriggerNoteContent, afterState); err != nil {
 		log.Warn("failed to update feedback signal", "bot_comment_id", job.BotCommentID, "error", err)
 	}
 
@@ -141,20 +150,14 @@ func (p *Pipeline) Execute(ctx context.Context, job *domain.ReplyJob) error {
 		}
 	}
 
-	// Auto-resolve on reject/acknowledge only; agree/fixed waits for LLM verification
-	if intent == domain.IntentReject || intent == domain.IntentAcknowledge {
-		if err := p.gitlabClient.ResolveDiscussion(ctx, job.GitLabProjectID, job.MrIID, job.DiscussionID); err != nil {
-			log.Warn("failed to auto-resolve discussion", "error", err)
-		} else {
-			log.Info("auto-resolved discussion", "intent", intent)
-		}
-	}
-
-	if err := p.replyJobStore.UpdateCompleted(ctx, job.ID, replyText, intent, signal); err != nil {
+	if err := p.replyJobStore.UpdateCompleted(ctx, job.ID, replyText, intent, signal, beforeState, afterState); err != nil {
 		log.Error("reply posted but failed to persist completion; manual reconciliation required",
 			"error", err)
 		return nil
 	}
+
+	job.ThreadStateBefore = domain.Ptr(beforeState)
+	job.ThreadStateAfter = domain.Ptr(afterState)
 
 	log.Info("reply posted", "intent", intent, "signal", signal)
 	return nil

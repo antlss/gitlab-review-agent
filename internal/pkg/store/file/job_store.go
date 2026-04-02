@@ -38,6 +38,7 @@ func (s *ReviewJobStore) Create(_ context.Context, job *domain.ReviewJob) error 
 	defer s.b.mu.Unlock()
 
 	now := time.Now()
+	domain.EnsureReviewJobVersionDefaults(job)
 	job.CreatedAt = now
 	job.UpdatedAt = now
 	if job.QueuedAt.IsZero() {
@@ -93,6 +94,16 @@ func (s *ReviewJobStore) UpdateStatus(_ context.Context, id uuid.UUID, status do
 func (s *ReviewJobStore) UpdateBaseSHA(_ context.Context, id uuid.UUID, baseSHA string) error {
 	return s.updateJob(id, func(job *domain.ReviewJob) {
 		job.BaseSHA = &baseSHA
+	})
+}
+
+func (s *ReviewJobStore) UpdateSessionMetadata(_ context.Context, id uuid.UUID, reviewMode, promptVersion, policyVersion, modelPlanVersion string, findingsBudget int) error {
+	return s.updateJob(id, func(job *domain.ReviewJob) {
+		job.ReviewMode = domain.Ptr(reviewMode)
+		job.PromptVersion = domain.Ptr(promptVersion)
+		job.PolicyVersion = domain.Ptr(policyVersion)
+		job.ModelPlanVersion = domain.Ptr(modelPlanVersion)
+		job.FindingsBudget = domain.Ptr(findingsBudget)
 	})
 }
 

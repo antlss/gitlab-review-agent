@@ -72,7 +72,7 @@ func (s *FeedbackStore) GetByNoteID(_ context.Context, noteID int64) (*domain.Re
 	return &fb, nil
 }
 
-func (s *FeedbackStore) UpdateSignal(_ context.Context, noteID int64, signal domain.FeedbackSignal, replyContent string) error {
+func (s *FeedbackStore) UpdateSignal(_ context.Context, noteID int64, signal domain.FeedbackSignal, replyContent string, threadState domain.ThreadState) error {
 	s.b.mu.Lock()
 	defer s.b.mu.Unlock()
 
@@ -90,6 +90,7 @@ func (s *FeedbackStore) UpdateSignal(_ context.Context, noteID int64, signal dom
 
 	fb.Signal = &signal
 	fb.SignalReplyContent = &replyContent
+	fb.ThreadState = domain.Ptr(threadState)
 	fb.UpdatedAt = time.Now()
 	return s.b.writeJSON(fname, &fb)
 }

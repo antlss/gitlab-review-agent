@@ -1,6 +1,8 @@
 package review
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -139,10 +141,22 @@ func ValidateAndFilter(
 		addedLinesMap[f.Path] = lines
 	}
 
-	existingSet := make(map[string]bool)
+	existingLocationSet := make(map[string]bool)
+	existingContentSet := make(map[string]bool)
+	existingSemanticSet := make(map[string]bool)
+	existingLocationFingerprintSet := make(map[string]bool)
 	for _, c := range existingComments {
-		key := fmt.Sprintf("%s:%d", c.FilePath, c.LineNumber)
-		existingSet[key] = true
+		locationKey := fmt.Sprintf("%s:%d", c.FilePath, c.LineNumber)
+		existingLocationSet[locationKey] = true
+		if c.ContentHash != "" {
+			existingContentSet[c.ContentHash] = true
+		}
+		if c.SemanticFingerprint != "" {
+			existingSemanticSet[c.SemanticFingerprint] = true
+		}
+		if c.LocationFingerprint != "" {
+			existingLocationFingerprintSet[c.LocationFingerprint] = true
+		}
 	}
 
 	validSeverities := map[string]domain.CommentSeverity{
@@ -153,7 +167,10 @@ func ValidateAndFilter(
 	}
 
 	var results []domain.ParsedComment
-	seen := make(map[string]bool)
+	seenLocation := make(map[string]bool)
+	seenContent := make(map[string]bool)
+	seenSemantic := make(map[string]bool)
+	seenLocationFingerprint := make(map[string]bool)
 
 	for _, r := range parsed.Reviews {
 		comment := domain.ParsedComment{
@@ -165,6 +182,9 @@ func ValidateAndFilter(
 			Severity:      domain.CommentSeverity(strings.ToLower(r.Severity)),
 			Suggestion:    r.Suggestion,
 		}
+		comment.ContentHash = buildContentHash(comment.ReviewComment)
+		comment.SemanticFingerprint = buildSemanticFingerprint(comment.Category, comment.ReviewComment)
+		comment.LocationFingerprint = buildLocationFingerprint(comment.FilePath, comment.LineNumber, comment.Category)
 
 		if _, ok := validSeverities[string(comment.Severity)]; !ok {
 			switch comment.Confidence {
@@ -188,8 +208,20 @@ func ValidateAndFilter(
 			}
 		}
 
-		key := fmt.Sprintf("%s:%d", comment.FilePath, comment.LineNumber)
-		if existingSet[key] {
+		locationKey := fmt.Sprintf("%s:%d", comment.FilePath, comment.LineNumber)
+		if !comment.Suppressed && existingLocationSet[locationKey] {
+			comment.Suppressed = true
+			comment.DropReason = "duplicate"
+		}
+		if !comment.Suppressed && comment.ContentHash != "" && existingContentSet[comment.ContentHash] {
+			comment.Suppressed = true
+			comment.DropReason = "duplicate"
+		}
+		if !comment.Suppressed && comment.SemanticFingerprint != "" && existingSemanticSet[comment.SemanticFingerprint] {
+			comment.Suppressed = true
+			comment.DropReason = "duplicate"
+		}
+		if !comment.Suppressed && comment.LocationFingerprint != "" && existingLocationFingerprintSet[comment.LocationFingerprint] {
 			comment.Suppressed = true
 			comment.DropReason = "duplicate"
 		}
@@ -214,17 +246,64 @@ func ValidateAndFilter(
 			comment.DropReason = "non_actionable"
 		}
 
-		dedupKey := fmt.Sprintf("%s:%d:%s", comment.FilePath, comment.LineNumber, comment.Category)
-		if seen[dedupKey] {
+		if !comment.Suppressed && seenLocation[locationKey] {
 			comment.Suppressed = true
 			comment.DropReason = "duplicate"
 		}
-		seen[dedupKey] = true
+		if !comment.Suppressed && comment.ContentHash != "" && seenContent[comment.ContentHash] {
+			comment.Suppressed = true
+			comment.DropReason = "duplicate"
+		}
+		if !comment.Suppressed && comment.SemanticFingerprint != "" && seenSemantic[comment.SemanticFingerprint] {
+			comment.Suppressed = true
+			comment.DropReason = "duplicate"
+		}
+		if !comment.Suppressed && comment.LocationFingerprint != "" && seenLocationFingerprint[comment.LocationFingerprint] {
+			comment.Suppressed = true
+			comment.DropReason = "duplicate"
+		}
+
+		seenLocation[locationKey] = true
+		if comment.ContentHash != "" {
+			seenContent[comment.ContentHash] = true
+		}
+		if comment.SemanticFingerprint != "" {
+			seenSemantic[comment.SemanticFingerprint] = true
+		}
+		if comment.LocationFingerprint != "" {
+			seenLocationFingerprint[comment.LocationFingerprint] = true
+		}
 
 		results = append(results, comment)
 	}
 
 	return results
+}
+
+func buildContentHash(reviewComment string) string {
+	return hashFingerprint(normalizeFingerprintText(reviewComment))
+}
+
+func buildSemanticFingerprint(category domain.CommentCategory, reviewComment string) string {
+	return hashFingerprint(strings.ToLower(strings.TrimSpace(string(category))) + "|" + normalizeFingerprintText(reviewComment))
+}
+
+func buildLocationFingerprint(filePath string, lineNumber int, category domain.CommentCategory) string {
+	return hashFingerprint(strings.ToLower(strings.TrimSpace(filePath)) + "|" + fmt.Sprintf("%d", lineNumber) + "|" + strings.ToLower(strings.TrimSpace(string(category))))
+}
+
+func normalizeFingerprintText(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	fields := strings.Fields(s)
+	return strings.Join(fields, " ")
+}
+
+func hashFingerprint(s string) string {
+	if s == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
 }
 
 func isAllowedFinalCategory(category string) bool {

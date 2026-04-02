@@ -1,6 +1,8 @@
 package review
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/antlss/gitlab-review-agent/internal/domain"
@@ -105,5 +107,23 @@ func TestFilterExtractedCandidates(t *testing.T) {
 	}
 	if len(got.Verification.Paths) != 1 || got.Verification.Paths[0] != "dep.go" {
 		t.Fatalf("expected verification paths to be deduplicated, got %+v", got.Verification.Paths)
+	}
+}
+
+func TestBuildExcerptSectionsSupportsTieredRadius(t *testing.T) {
+	lines := make([]string, 60)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("line %d", i+1)
+	}
+	numbered := addLineNumbers(lines)
+
+	extraction := buildExcerptSections(numbered, []int{30}, len(numbered), extractionExcerptRadius, extractionExcerptMaxSections)
+	verification := buildExcerptSections(numbered, []int{30}, len(numbered), verificationExcerptRadius, verificationExcerptMaxSections)
+
+	if !strings.Contains(extraction, "lines 18-42") {
+		t.Fatalf("extraction excerpt = %q, want tighter radius", extraction)
+	}
+	if !strings.Contains(verification, "lines 1-60") {
+		t.Fatalf("verification excerpt = %q, want broader context window", verification)
 	}
 }

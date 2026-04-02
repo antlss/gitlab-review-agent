@@ -43,17 +43,23 @@ func (s *ReviewRecordStore) Upsert(ctx context.Context, record *domain.ReviewRec
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO review_records (
 			id, gitlab_project_id, mr_iid, review_job_id,
-			head_sha, reviewed_files, comments_posted, created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			head_sha, review_mode, prompt_version, policy_version,
+			model_plan_version, reviewed_files, comments_posted, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(gitlab_project_id, mr_iid) DO UPDATE SET
 			review_job_id = excluded.review_job_id,
 			head_sha = excluded.head_sha,
+			review_mode = excluded.review_mode,
+			prompt_version = excluded.prompt_version,
+			policy_version = excluded.policy_version,
+			model_plan_version = excluded.model_plan_version,
 			reviewed_files = excluded.reviewed_files,
 			comments_posted = excluded.comments_posted,
 			created_at = excluded.created_at`,
 		record.ID.String(), record.GitLabProjectID, record.MrIID,
 		record.ReviewJobID.String(), record.HeadSHA,
-		string(record.ReviewedFiles), record.CommentsPosted,
+		record.ReviewMode, record.PromptVersion, record.PolicyVersion,
+		record.ModelPlanVersion, string(record.ReviewedFiles), record.CommentsPosted,
 		record.CreatedAt.Format(time.RFC3339))
 	if err != nil {
 		return fmt.Errorf("upsert review record: %w", err)

@@ -147,3 +147,116 @@ func TestValidateAndFilterSuppressesNonProductionAndNonActionable(t *testing.T) 
 		t.Fatalf("expected third review to be suppressed as low_severity, got suppressed=%v reason=%s", results[2].Suppressed, results[2].DropReason)
 	}
 }
+
+func TestValidateAndFilterComputesFingerprints(t *testing.T) {
+	parsed := &ParsedOutput{
+		Reviews: []RawReview{{
+			FilePath:      "a.go",
+			LineNumber:    10,
+			ReviewComment: "This dereference can panic when the lookup misses.",
+			Confidence:    "HIGH",
+			Category:      "logic",
+			Severity:      "high",
+		}},
+	}
+
+	diffFiles := []domain.DiffFile{{Path: "a.go", AddedLines: []int{10}}}
+	results := ValidateAndFilter(parsed, diffFiles, nil)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].ContentHash == "" || results[0].SemanticFingerprint == "" || results[0].LocationFingerprint == "" {
+		t.Fatalf("expected fingerprints to be populated, got %+v", results[0])
+	}
+}
+
+func TestValidateAndFilterSuppressesSemanticDuplicatesAgainstExistingComments(t *testing.T) {
+	parsed := &ParsedOutput{
+		Reviews: []RawReview{{
+			FilePath:      "other.go",
+			LineNumber:    42,
+			ReviewComment: "This dereference can panic when the lookup misses.",
+			Confidence:    "HIGH",
+			Category:      "logic",
+			Severity:      "high",
+		}},
+	}
+
+	existing := []domain.ExistingComment{{
+		FilePath:            "a.go",
+		LineNumber:          10,
+		Summary:             "This dereference can panic when the lookup misses.",
+		SemanticFingerprint: buildSemanticFingerprint(domain.CommentCategory("logic"), "This dereference can panic when the lookup misses."),
+	}}
+
+	diffFiles := []domain.DiffFile{{Path: "other.go", AddedLines: []int{42}}}
+	results := ValidateAndFilter(parsed, diffFiles, existing)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if !results[0].Suppressed || results[0].DropReason != "duplicate" {
+		t.Fatalf("expected semantic duplicate to be suppressed, got suppressed=%v reason=%s", results[0].Suppressed, results[0].DropReason)
+	}
+}
+
+func TestValidateAndFilterSuppressesDuplicateReviewsWithinBatchBySemanticFingerprint(t *testing.T) {
+	parsed := &ParsedOutput{
+		Reviews: []RawReview{
+			{FilePath: "a.go", LineNumber: 10, ReviewComment: "This dereference can panic when the lookup misses.", Confidence: "HIGH", Category: "logic", Severity: "high"},
+			{FilePath: "b.go", LineNumber: 20, ReviewComment: "This dereference can panic when the lookup misses.", Confidence: "HIGH", Category: "logic", Severity: "high"},
+		},
+	}
+
+	diffFiles := []domain.DiffFile{
+		{Path: "a.go", AddedLines: []int{10}},
+		{Path: "b.go", AddedLines: []int{20}},
+	}
+
+	results := ValidateAndFilter(parsed, diffFiles, nil)
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	if results[0].Suppressed {
+		t.Fatal("expected first review to survive dedupe")
+	}
+	if !results[1].Suppressed || results[1].DropReason != "duplicate" {
+		t.Fatalf("expected second semantic duplicate to be suppressed, got suppressed=%v reason=%s", results[1].Suppressed, results[1].DropReason)
+	}
+}
+
+func TestValidateAndFilterSuppressesLocationDuplicatesAgainstExistingComments(t *testing.T) {
+	parsed := &ParsedOutput{
+		Reviews: []RawReview{{
+			FilePath:      "a.go",
+			LineNumber:    10,
+			ReviewComment: "new wording for the same risky line",
+			Confidence:    "HIGH",
+			Category:      "logic",
+			Severity:      "high",
+		}},
+	}
+
+	existing := []domain.ExistingComment{{
+		FilePath:            "a.go",
+		LineNumber:          10,
+		Summary:             "older comment",
+		LocationFingerprint: buildLocationFingerprint("a.go", 10, domain.CommentCategory("logic")),
+	}}
+
+	diffFiles := []domain.DiffFile{{Path: "a.go", AddedLines: []int{10}}}
+	results := ValidateAndFilter(parsed, diffFiles, existing)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if !results[0].Suppressed || results[0].DropReason != "duplicate" {
+		t.Fatalf("expected location duplicate to be suppressed, got suppressed=%v reason=%s", results[0].Suppressed, results[0].DropReason)
+	}
+}
+
+func TestBuildFingerprintHelpersNormalizeInput(t *testing.T) {
+	left := buildSemanticFingerprint(domain.CommentCategory("logic"), "  This dereference can panic   when the lookup misses. ")
+	right := buildSemanticFingerprint(domain.CommentCategory("logic"), "this dereference can panic when the lookup misses.")
+	if left != right {
+		t.Fatalf("expected normalized semantic fingerprints to match, got %q vs %q", left, right)
+	}
+}

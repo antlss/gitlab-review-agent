@@ -27,6 +27,7 @@ func (s *ReviewJobStore) Create(ctx context.Context, job *domain.ReviewJob) erro
 		return fmt.Errorf("review job ID must be set before calling Create")
 	}
 	now := time.Now()
+	domain.EnsureReviewJobVersionDefaults(job)
 	job.CreatedAt = now
 	job.UpdatedAt = now
 	if job.QueuedAt.IsZero() {
@@ -37,19 +38,22 @@ func (s *ReviewJobStore) Create(ctx context.Context, job *domain.ReviewJob) erro
 		INSERT INTO review_jobs (
 			id, gitlab_project_id, mr_iid, head_sha, base_sha,
 			target_branch, source_branch, is_force_push, dry_run,
-			trigger_source, status, repo_model_override, repo_language,
+			trigger_source, status, review_mode, prompt_version, policy_version,
+			model_plan_version, findings_budget, repo_model_override, repo_language,
 			repo_framework, repo_exclude_patterns,
 			queued_at, created_at, updated_at
 		) VALUES (
 			?, ?, ?, ?, ?,
 			?, ?, ?, ?,
+			?, ?, ?, ?, ?,
 			?, ?, ?, ?,
 			?, ?,
 			?, ?, ?
 		)`,
 		job.ID.String(), job.GitLabProjectID, job.MrIID, job.HeadSHA, job.BaseSHA,
 		job.TargetBranch, job.SourceBranch, domain.BoolToInt(job.IsForcePush), domain.BoolToInt(job.DryRun),
-		string(job.TriggerSource), string(job.Status), job.RepoModelOverride, job.RepoLanguage,
+		string(job.TriggerSource), string(job.Status), job.ReviewMode, job.PromptVersion, job.PolicyVersion,
+		job.ModelPlanVersion, job.FindingsBudget, job.RepoModelOverride, job.RepoLanguage,
 		job.RepoFramework, job.RepoExcludePatterns,
 		now.Format(time.RFC3339), now.Format(time.RFC3339), now.Format(time.RFC3339))
 	if err != nil {
@@ -99,6 +103,16 @@ func (s *ReviewJobStore) UpdateBaseSHA(ctx context.Context, id uuid.UUID, baseSH
 		baseSHA, time.Now().Format(time.RFC3339), id.String())
 	if err != nil {
 		return fmt.Errorf("update base sha: %w", err)
+	}
+	return nil
+}
+
+func (s *ReviewJobStore) UpdateSessionMetadata(ctx context.Context, id uuid.UUID, reviewMode, promptVersion, policyVersion, modelPlanVersion string, findingsBudget int) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE review_jobs SET review_mode = ?, prompt_version = ?, policy_version = ?, model_plan_version = ?, findings_budget = ?, updated_at = ? WHERE id = ?`,
+		reviewMode, promptVersion, policyVersion, modelPlanVersion, findingsBudget, time.Now().Format(time.RFC3339), id.String())
+	if err != nil {
+		return fmt.Errorf("update session metadata: %w", err)
 	}
 	return nil
 }

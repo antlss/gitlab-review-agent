@@ -20,9 +20,24 @@ func Deref[T any](p *T) T {
 }
 
 // Deprecated aliases — kept for backward compatibility during migration.
-func StrPtr(s string) *string { return Ptr(s) }
+func StrPtr(s string) *string   { return Ptr(s) }
 func DerefStr(p *string) string { return Deref(p) }
-func DerefInt(p *int) int { return Deref(p) }
+func DerefInt(p *int) int       { return Deref(p) }
+
+func EnsureReviewJobVersionDefaults(job *ReviewJob) {
+	if job == nil {
+		return
+	}
+	if strings.TrimSpace(DerefStr(job.PromptVersion)) == "" {
+		job.PromptVersion = Ptr(DefaultPromptVersion)
+	}
+	if strings.TrimSpace(DerefStr(job.PolicyVersion)) == "" {
+		job.PolicyVersion = Ptr(DefaultPolicyVersion)
+	}
+	if strings.TrimSpace(DerefStr(job.ModelPlanVersion)) == "" {
+		job.ModelPlanVersion = Ptr(DefaultModelPlanVersion)
+	}
+}
 
 // Truncate shortens s to at most max runes, appending "..." if truncated.
 // Safe for multi-byte UTF-8 content (Vietnamese, Japanese, etc.).
@@ -74,6 +89,33 @@ func DerefCategory(c *CommentCategory) CommentCategory {
 		return CategoryLogic
 	}
 	return *c
+}
+
+func DerefThreadState(s *ThreadState) ThreadState {
+	if s == nil {
+		return ThreadStateOpen
+	}
+	return *s
+}
+
+func ComputeThreadState(current *ThreadState, intent ReplyIntent) (ThreadState, ThreadState) {
+	before := DerefThreadState(current)
+	if before == ThreadStateResolved || before == ThreadStateSuperseded {
+		return before, before
+	}
+
+	switch intent {
+	case IntentAgree:
+		return before, ThreadStatePendingVerification
+	case IntentReject:
+		return before, ThreadStateDismissed
+	case IntentAcknowledge:
+		return before, ThreadStateAcknowledged
+	case IntentQuestion, IntentDiscuss:
+		return before, ThreadStateOpen
+	default:
+		return before, ThreadStateOpen
+	}
 }
 
 func GetIntOr(input ToolInput, key string, def int) int {

@@ -13,15 +13,17 @@ import (
 )
 
 const (
-	structuredReviewMaxTokens   = 4096
-	bundleFullFileMaxBytes      = 24 * 1024
-	bundleFullFileMaxLines      = 400
-	bundleExcerptRadius         = 30
-	bundleExcerptMaxSections    = 6
-	maxExtractedCandidates      = 8
-	maxVerificationPaths        = 12
-	maxVerificationSymbols      = 8
-	maxVerificationPatterns     = 8
+	structuredReviewMaxTokens      = 4096
+	bundleFullFileMaxBytes         = 24 * 1024
+	bundleFullFileMaxLines         = 400
+	extractionExcerptRadius        = 12
+	extractionExcerptMaxSections   = 4
+	verificationExcerptRadius      = 30
+	verificationExcerptMaxSections = 6
+	maxExtractedCandidates         = 8
+	maxVerificationPaths           = 12
+	maxVerificationSymbols         = 8
+	maxVerificationPatterns        = 8
 )
 
 type structuredChunkResult struct {
@@ -85,7 +87,12 @@ func (p *Pipeline) runStructuredChunkReview(
 	toolCfg.GitEnv = p.gitManager.GitEnv()
 	registry := tools.NewRegistry(repoPath, chunkFiles, toolCfg)
 
-	bundle, err := p.buildReviewBundle(ctx, job.GitLabProjectID, chunkFiles, baseSHA, job.HeadSHA)
+	extractionBundle, err := p.buildReviewBundle(ctx, job.GitLabProjectID, chunkFiles, baseSHA, job.HeadSHA, extractionExcerptRadius, extractionExcerptMaxSections)
+	if err != nil {
+		return nil, err
+	}
+
+	verificationContextBundle, err := p.buildReviewBundle(ctx, job.GitLabProjectID, chunkFiles, baseSHA, job.HeadSHA, verificationExcerptRadius, verificationExcerptMaxSections)
 	if err != nil {
 		return nil, err
 	}
@@ -96,7 +103,7 @@ func (p *Pipeline) runStructuredChunkReview(
 		Temperature: 0.1,
 		Messages: []domain.ChatMessage{
 			{Role: "system", Content: prompt.StructuredExtractionSystemPrompt(reviewCtx)},
-			{Role: "user", Content: buildExtractionUserPrompt(reviewCtx, chunkFiles, bundle)},
+			{Role: "user", Content: buildExtractionUserPrompt(reviewCtx, chunkFiles, extractionBundle)},
 		},
 	}
 
@@ -134,7 +141,7 @@ func (p *Pipeline) runStructuredChunkReview(
 		Temperature: 0.1,
 		Messages: []domain.ChatMessage{
 			{Role: "system", Content: prompt.StructuredVerificationSystemPrompt(reviewCtx, lang)},
-			{Role: "user", Content: buildVerificationUserPrompt(reviewCtx, bundle.Filter(candidateFiles), candidates, verificationBundle)},
+			{Role: "user", Content: buildVerificationUserPrompt(reviewCtx, verificationContextBundle.Filter(candidateFiles), candidates, verificationBundle)},
 		},
 	}
 
@@ -163,6 +170,7 @@ func (p *Pipeline) buildReviewBundle(
 	projectID int64,
 	files []domain.DiffFile,
 	baseSHA, headSHA string,
+	excerptRadius, excerptMaxSections int,
 ) (reviewBundle, error) {
 	bundle := reviewBundle{Files: make([]reviewBundleFile, 0, len(files))}
 
@@ -173,7 +181,7 @@ func (p *Pipeline) buildReviewBundle(
 		}
 		diff = CompactDiff(diff, 2)
 
-		content, mode, err := p.readChangedFileContext(ctx, projectID, headSHA, f)
+		content, mode, err := p.readChangedFileContext(ctx, projectID, headSHA, f, excerptRadius, excerptMaxSections)
 		if err != nil {
 			return reviewBundle{}, fmt.Errorf("load changed file context for %s: %w", f.Path, err)
 		}
@@ -192,7 +200,7 @@ func (p *Pipeline) buildReviewBundle(
 	return bundle, nil
 }
 
-func (p *Pipeline) readChangedFileContext(ctx context.Context, projectID int64, headSHA string, diffFile domain.DiffFile) (string, string, error) {
+func (p *Pipeline) readChangedFileContext(ctx context.Context, projectID int64, headSHA string, diffFile domain.DiffFile, excerptRadius, excerptMaxSections int) (string, string, error) {
 	content, err := p.gitManager.ReadFileAtSHA(ctx, projectID, headSHA, diffFile.Path)
 	if err != nil {
 		return "", "", err
@@ -205,7 +213,7 @@ func (p *Pipeline) readChangedFileContext(ctx context.Context, projectID int64, 
 		return strings.Join(numbered, "\n"), "full", nil
 	}
 
-	return buildExcerptSections(numbered, diffFile.AddedLines, len(lines)), "excerpt", nil
+	return buildExcerptSections(numbered, diffFile.AddedLines, len(lines), excerptRadius, excerptMaxSections), "excerpt", nil
 }
 
 func addLineNumbers(lines []string) []string {
@@ -216,14 +224,20 @@ func addLineNumbers(lines []string) []string {
 	return numbered
 }
 
-func buildExcerptSections(numberedLines []string, addedLines []int, totalLines int) string {
+func buildExcerptSections(numberedLines []string, addedLines []int, totalLines int, excerptRadius, excerptMaxSections int) string {
 	if totalLines == 0 {
 		return ""
 	}
+	if excerptRadius <= 0 {
+		excerptRadius = verificationExcerptRadius
+	}
+	if excerptMaxSections <= 0 {
+		excerptMaxSections = verificationExcerptMaxSections
+	}
 
-	sections := mergeLineWindows(addedLines, totalLines, bundleExcerptRadius, bundleExcerptMaxSections)
+	sections := mergeLineWindows(addedLines, totalLines, excerptRadius, excerptMaxSections)
 	if len(sections) == 0 {
-		end := min(totalLines, bundleExcerptRadius*2)
+		end := min(totalLines, excerptRadius*2)
 		sections = append(sections, [2]int{1, end})
 	}
 

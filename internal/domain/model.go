@@ -42,6 +42,11 @@ type ReviewJob struct {
 	DryRun                  bool            `db:"dry_run" json:"dryRun"`
 	TriggerSource           TriggerSource   `db:"trigger_source" json:"triggerSource"`
 	Status                  ReviewJobStatus `db:"status" json:"status"`
+	ReviewMode              *string         `db:"review_mode" json:"reviewMode,omitempty"`
+	PromptVersion           *string         `db:"prompt_version" json:"promptVersion,omitempty"`
+	PolicyVersion           *string         `db:"policy_version" json:"policyVersion,omitempty"`
+	ModelPlanVersion        *string         `db:"model_plan_version" json:"modelPlanVersion,omitempty"`
+	FindingsBudget          *int            `db:"findings_budget" json:"findingsBudget,omitempty"`
 	ModelUsed               *string         `db:"model_used" json:"modelUsed,omitempty"`
 	RepoModelOverride       *string         `db:"repo_model_override" json:"repoModelOverride,omitempty"`
 	RepoLanguage            *string         `db:"repo_language" json:"repoLanguage,omitempty"`
@@ -84,6 +89,8 @@ type ReplyJob struct {
 	ReplyContent       *string         `db:"reply_content" json:"replyContent,omitempty"`
 	IntentClassified   *ReplyIntent    `db:"intent_classified" json:"intentClassified,omitempty"`
 	FeedbackSignal     *FeedbackSignal `db:"feedback_signal" json:"feedbackSignal,omitempty"`
+	ThreadStateBefore  *ThreadState    `db:"thread_state_before" json:"threadStateBefore,omitempty"`
+	ThreadStateAfter   *ThreadState    `db:"thread_state_after" json:"threadStateAfter,omitempty"`
 	ErrorMessage       *string         `db:"error_message" json:"errorMessage,omitempty"`
 	QueuedAt           time.Time       `db:"queued_at" json:"queuedAt"`
 	StartedAt          *time.Time      `db:"started_at" json:"startedAt,omitempty"`
@@ -93,49 +100,64 @@ type ReplyJob struct {
 }
 
 type ReviewFeedback struct {
-	ID                 uuid.UUID        `db:"id" json:"id"`
-	GitLabProjectID    int64            `db:"gitlab_project_id" json:"gitlabProjectId"`
-	ReviewJobID        *uuid.UUID       `db:"review_job_id" json:"reviewJobId,omitempty"`
-	GitLabDiscussionID string           `db:"gitlab_discussion_id" json:"gitlabDiscussionId"`
-	GitLabNoteID       int64            `db:"gitlab_note_id" json:"gitlabNoteId"`
-	FilePath           *string          `db:"file_path" json:"filePath,omitempty"`
-	LineNumber         *int             `db:"line_number" json:"lineNumber,omitempty"`
-	Category           *CommentCategory `db:"category" json:"category,omitempty"`
-	CommentSummary     *string          `db:"comment_summary" json:"commentSummary,omitempty"`
-	Language           *string          `db:"language" json:"language,omitempty"`
-	Signal             *FeedbackSignal  `db:"signal" json:"signal,omitempty"`
-	SignalReplyContent *string          `db:"signal_reply_content" json:"signalReplyContent,omitempty"`
-	ModelUsed          *string          `db:"model_used" json:"modelUsed,omitempty"`
-	ConsolidatedAt     *time.Time       `db:"consolidated_at" json:"consolidatedAt,omitempty"`
-	CreatedAt          time.Time        `db:"created_at" json:"createdAt"`
-	UpdatedAt          time.Time        `db:"updated_at" json:"updatedAt"`
+	ID                  uuid.UUID        `db:"id" json:"id"`
+	GitLabProjectID     int64            `db:"gitlab_project_id" json:"gitlabProjectId"`
+	ReviewJobID         *uuid.UUID       `db:"review_job_id" json:"reviewJobId,omitempty"`
+	GitLabDiscussionID  string           `db:"gitlab_discussion_id" json:"gitlabDiscussionId"`
+	GitLabNoteID        int64            `db:"gitlab_note_id" json:"gitlabNoteId"`
+	ReviewMode          *string          `db:"review_mode" json:"reviewMode,omitempty"`
+	PromptVersion       *string          `db:"prompt_version" json:"promptVersion,omitempty"`
+	PolicyVersion       *string          `db:"policy_version" json:"policyVersion,omitempty"`
+	ModelPlanVersion    *string          `db:"model_plan_version" json:"modelPlanVersion,omitempty"`
+	FilePath            *string          `db:"file_path" json:"filePath,omitempty"`
+	LineNumber          *int             `db:"line_number" json:"lineNumber,omitempty"`
+	Category            *CommentCategory `db:"category" json:"category,omitempty"`
+	CommentSummary      *string          `db:"comment_summary" json:"commentSummary,omitempty"`
+	ContentHash         *string          `db:"content_hash" json:"contentHash,omitempty"`
+	SemanticFingerprint *string          `db:"semantic_fingerprint" json:"semanticFingerprint,omitempty"`
+	LocationFingerprint *string          `db:"location_fingerprint" json:"locationFingerprint,omitempty"`
+	Language            *string          `db:"language" json:"language,omitempty"`
+	Signal              *FeedbackSignal  `db:"signal" json:"signal,omitempty"`
+	ThreadState         *ThreadState     `db:"thread_state" json:"threadState,omitempty"`
+	SignalReplyContent  *string          `db:"signal_reply_content" json:"signalReplyContent,omitempty"`
+	ModelUsed           *string          `db:"model_used" json:"modelUsed,omitempty"`
+	ConsolidatedAt      *time.Time       `db:"consolidated_at" json:"consolidatedAt,omitempty"`
+	CreatedAt           time.Time        `db:"created_at" json:"createdAt"`
+	UpdatedAt           time.Time        `db:"updated_at" json:"updatedAt"`
 }
 
 type ReviewRecord struct {
-	ID              uuid.UUID `db:"id" json:"id"`
-	GitLabProjectID int64     `db:"gitlab_project_id" json:"gitlabProjectId"`
-	MrIID           int64     `db:"mr_iid" json:"mrIid"`
-	ReviewJobID     uuid.UUID `db:"review_job_id" json:"reviewJobId"`
-	HeadSHA         string    `db:"head_sha" json:"headSha"`
-	ReviewedFiles   []byte    `db:"reviewed_files" json:"reviewedFiles"` // JSONB
-	CommentsPosted  int       `db:"comments_posted" json:"commentsPosted"`
-	CreatedAt       time.Time `db:"created_at" json:"createdAt"`
+	ID               uuid.UUID `db:"id" json:"id"`
+	GitLabProjectID  int64     `db:"gitlab_project_id" json:"gitlabProjectId"`
+	MrIID            int64     `db:"mr_iid" json:"mrIid"`
+	ReviewJobID      uuid.UUID `db:"review_job_id" json:"reviewJobId"`
+	HeadSHA          string    `db:"head_sha" json:"headSha"`
+	ReviewMode       *string   `db:"review_mode" json:"reviewMode,omitempty"`
+	PromptVersion    *string   `db:"prompt_version" json:"promptVersion,omitempty"`
+	PolicyVersion    *string   `db:"policy_version" json:"policyVersion,omitempty"`
+	ModelPlanVersion *string   `db:"model_plan_version" json:"modelPlanVersion,omitempty"`
+	ReviewedFiles    []byte    `db:"reviewed_files" json:"reviewedFiles"` // JSONB
+	CommentsPosted   int       `db:"comments_posted" json:"commentsPosted"`
+	CreatedAt        time.Time `db:"created_at" json:"createdAt"`
 }
 
 // ─── Transfer objects ────────────────────────────────────────────────────────────
 
 type ParsedComment struct {
-	FilePath           string          `json:"filePath"`
-	LineNumber         int             `json:"lineNumber"`
-	ReviewComment      string          `json:"reviewComment"`
-	Confidence         string          `json:"confidence"` // "HIGH" | "MEDIUM" | "LOW"
-	Severity           CommentSeverity `json:"severity"`   // "critical" | "high" | "medium" | "low"
-	Category           CommentCategory `json:"category"`
-	Suggestion         string          `json:"suggestion,omitempty"` // concrete code fix suggestion
-	GitLabNoteID       *int64          `json:"gitlabNoteId,omitempty"`
-	GitLabDiscussionID *string         `json:"gitlabDiscussionId,omitempty"`
-	Suppressed         bool            `json:"suppressed,omitempty"`
-	DropReason         string          `json:"dropReason,omitempty"`
+	FilePath            string          `json:"filePath"`
+	LineNumber          int             `json:"lineNumber"`
+	ReviewComment       string          `json:"reviewComment"`
+	Confidence          string          `json:"confidence"` // "HIGH" | "MEDIUM" | "LOW"
+	Severity            CommentSeverity `json:"severity"`   // "critical" | "high" | "medium" | "low"
+	Category            CommentCategory `json:"category"`
+	Suggestion          string          `json:"suggestion,omitempty"` // concrete code fix suggestion
+	GitLabNoteID        *int64          `json:"gitlabNoteId,omitempty"`
+	GitLabDiscussionID  *string         `json:"gitlabDiscussionId,omitempty"`
+	ContentHash         string          `json:"contentHash,omitempty"`
+	SemanticFingerprint string          `json:"semanticFingerprint,omitempty"`
+	LocationFingerprint string          `json:"locationFingerprint,omitempty"`
+	Suppressed          bool            `json:"suppressed,omitempty"`
+	DropReason          string          `json:"dropReason,omitempty"`
 }
 
 type DiffFile struct {
@@ -158,7 +180,7 @@ type ReviewContext struct {
 	RecentFeedbacks []FeedbackSnippet
 
 	ExistingUnresolvedComments []ExistingComment
-	BotUnresolvedComments     []BotUnresolvedComment
+	BotUnresolvedComments      []BotUnresolvedComment
 
 	DetectedLanguage   string
 	DetectedFramework  string
@@ -173,9 +195,12 @@ type FeedbackSnippet struct {
 }
 
 type ExistingComment struct {
-	FilePath   string
-	LineNumber int
-	Summary    string
+	FilePath            string
+	LineNumber          int
+	Summary             string
+	ContentHash         string
+	SemanticFingerprint string
+	LocationFingerprint string
 }
 
 type BotUnresolvedComment struct {
@@ -307,4 +332,3 @@ type ToolResult struct {
 	IsCached bool
 	Error    *string
 }
-

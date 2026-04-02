@@ -94,12 +94,17 @@ func reviewCmd() *cobra.Command {
 				SourceBranch:      mr.SourceBranch,
 				TriggerSource:     domain.TriggerSourceCLI,
 				Status:            domain.ReviewJobStatusPending,
+				PromptVersion:     domain.Ptr(domain.DefaultPromptVersion),
+				PolicyVersion:     domain.Ptr(domain.DefaultPolicyVersion),
+				ModelPlanVersion:  domain.Ptr(domain.DefaultModelPlanVersion),
 				DryRun:            true,
 				RepoModelOverride: settings.ModelOverride,
 				RepoLanguage:      settings.Language,
 				RepoFramework:     settings.Framework,
 				QueuedAt:          time.Now(),
 			}
+
+			domain.EnsureReviewJobVersionDefaults(job)
 
 			if model != "" {
 				job.RepoModelOverride = &model
@@ -235,6 +240,10 @@ func reviewCmd() *cobra.Command {
 					ReviewJobID:        &updatedJob.ID,
 					GitLabDiscussionID: resp.DiscussionID,
 					GitLabNoteID:       resp.NoteID,
+					ReviewMode:         updatedJob.ReviewMode,
+					PromptVersion:      updatedJob.PromptVersion,
+					PolicyVersion:      updatedJob.PolicyVersion,
+					ModelPlanVersion:   updatedJob.ModelPlanVersion,
 					FilePath:           &c.FilePath,
 					LineNumber:         &c.LineNumber,
 					Category:           &c.Category,

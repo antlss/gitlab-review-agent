@@ -69,9 +69,13 @@ func (m *fakeReplyRepoManager) RepoPath(_ int64) string {
 }
 
 type fakeReplyJobStore struct {
-	statuses             []domain.ReplyJobStatus
-	updateCompletedErr   error
-	updateCompletedCalls int
+	statuses                []domain.ReplyJobStatus
+	updateCompletedErr      error
+	updateCompletedCalls    int
+	lastCompletedIntent     domain.ReplyIntent
+	lastCompletedSignal     domain.FeedbackSignal
+	lastThreadStateBefore   domain.ThreadState
+	lastThreadStateAfter    domain.ThreadState
 }
 
 func (s *fakeReplyJobStore) Create(_ context.Context, _ *domain.ReplyJob) error { return nil }
@@ -82,8 +86,12 @@ func (s *fakeReplyJobStore) UpdateStatus(_ context.Context, _ uuid.UUID, status 
 	s.statuses = append(s.statuses, status)
 	return nil
 }
-func (s *fakeReplyJobStore) UpdateCompleted(_ context.Context, _ uuid.UUID, _ string, _ domain.ReplyIntent, _ domain.FeedbackSignal) error {
+func (s *fakeReplyJobStore) UpdateCompleted(_ context.Context, _ uuid.UUID, _ string, intent domain.ReplyIntent, signal domain.FeedbackSignal, beforeState, afterState domain.ThreadState) error {
 	s.updateCompletedCalls++
+	s.lastCompletedIntent = intent
+	s.lastCompletedSignal = signal
+	s.lastThreadStateBefore = beforeState
+	s.lastThreadStateAfter = afterState
 	return s.updateCompletedErr
 }
 
@@ -115,17 +123,23 @@ func (s *fakeReplyRepoSettingsStore) ListEnabled(_ context.Context) ([]*domain.R
 func (s *fakeReplyRepoSettingsStore) MarkArchived(_ context.Context, _ int64) error { return nil }
 
 type fakeReplyFeedbackStore struct {
-	updateSignalCalls int
+	feedback              *domain.ReviewFeedback
+	updateSignalCalls     int
+	lastUpdatedThreadState domain.ThreadState
 }
 
 func (s *fakeReplyFeedbackStore) Create(_ context.Context, _ *domain.ReviewFeedback) error {
 	return nil
 }
 func (s *fakeReplyFeedbackStore) GetByNoteID(_ context.Context, _ int64) (*domain.ReviewFeedback, error) {
-	return nil, nil
+	return s.feedback, nil
 }
-func (s *fakeReplyFeedbackStore) UpdateSignal(_ context.Context, _ int64, _ domain.FeedbackSignal, _ string) error {
+func (s *fakeReplyFeedbackStore) UpdateSignal(_ context.Context, _ int64, _ domain.FeedbackSignal, _ string, threadState domain.ThreadState) error {
 	s.updateSignalCalls++
+	s.lastUpdatedThreadState = threadState
+	if s.feedback != nil {
+		s.feedback.ThreadState = domain.Ptr(threadState)
+	}
 	return nil
 }
 func (s *fakeReplyFeedbackStore) ListForConsolidation(_ context.Context, _ int64, _ int) ([]*domain.ReviewFeedback, error) {
@@ -137,10 +151,11 @@ func (s *fakeReplyFeedbackStore) ListRecentByProject(_ context.Context, _ int64,
 }
 
 type fakeReplyGitLabClient struct {
-	discussion     *domain.GitLabDiscussion
-	mr             *domain.GitLabMR
-	project        *domain.GitLabProject
-	postReplyCalls int
+	discussion             *domain.GitLabDiscussion
+	mr                     *domain.GitLabMR
+	project                *domain.GitLabProject
+	postReplyCalls         int
+	resolveDiscussionCalls int
 }
 
 func (c *fakeReplyGitLabClient) GetMR(_ context.Context, _, _ int64) (*domain.GitLabMR, error) {
@@ -169,6 +184,7 @@ func (c *fakeReplyGitLabClient) PostReply(_ context.Context, _, _ int64, _ strin
 	return &domain.PostCommentResponse{NoteID: 99}, nil
 }
 func (c *fakeReplyGitLabClient) ResolveDiscussion(_ context.Context, _, _ int64, _ string) error {
+	c.resolveDiscussionCalls++
 	return nil
 }
 
@@ -204,7 +220,6 @@ func TestPipelineExecuteSyncsLatestRepoStateBeforeGeneratingReply(t *testing.T) 
 	}
 	agent := &fakeReplyAgent{reply: "looks good"}
 	repoManager := &fakeReplyRepoManager{files: map[string]string{"pkg/service.go": content}}
-
 
 	pipeline := NewPipeline(PipelineDeps{
 		Config:        testReplyConfig(),
@@ -296,6 +311,226 @@ func TestPipelineExecuteDoesNotRetryAfterReplyWasPostedWhenCompletionPersistFail
 	}
 	if replyStore.updateCompletedCalls != 1 {
 		t.Fatalf("UpdateCompleted() calls = %d, want 1", replyStore.updateCompletedCalls)
+	}
+}
+
+func TestPipelineExecuteDoesNotAutoResolveAcknowledgeOrRejectReplies(t *testing.T) {
+	tests := []struct {
+		name           string
+		trigger        string
+		expectedIntent domain.ReplyIntent
+	}{
+		{
+			name:           "acknowledge reply",
+			trigger:        "noted, will address later",
+			expectedIntent: domain.IntentAcknowledge,
+		},
+		{
+			name:           "reject reply",
+			trigger:        "this is intentional by design",
+			expectedIntent: domain.IntentReject,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			replyStore := &fakeReplyJobStore{}
+			repoSettings := &fakeReplyRepoSettingsStore{}
+			feedbackStore := &fakeReplyFeedbackStore{}
+			gitlabClient := &fakeReplyGitLabClient{
+				discussion: &domain.GitLabDiscussion{
+					ID: "discussion-3",
+					Notes: []domain.GitLabNote{
+						{ID: 30, AuthorName: "bot", Body: "Please fix this", CreatedAt: time.Now()},
+						{ID: 31, AuthorName: "dev", Body: tt.trigger, CreatedAt: time.Now()},
+					},
+				},
+				mr: &domain.GitLabMR{IID: 7, Title: "MR", HeadSHA: "head"},
+			}
+
+			pipeline := NewPipeline(PipelineDeps{
+				Config:        testReplyConfig(),
+				ReplyJobStore: replyStore,
+				RepoSettings:  repoSettings,
+				FeedbackStore: feedbackStore,
+				GitLabClient:  gitlabClient,
+				ReplyAgent:    &fakeReplyAgent{reply: "thanks for the update"},
+				RepoManager:   &fakeReplyRepoManager{},
+			})
+
+			job := &domain.ReplyJob{
+				ID:                 uuid.New(),
+				GitLabProjectID:    42,
+				MrIID:              7,
+				DiscussionID:       "discussion-3",
+				TriggerNoteContent: tt.trigger,
+				BotCommentID:       30,
+				BotCommentContent:  "Please fix this",
+			}
+
+			if err := pipeline.Execute(context.Background(), job); err != nil {
+				t.Fatalf("Execute() error = %v", err)
+			}
+			if gitlabClient.postReplyCalls != 1 {
+				t.Fatalf("PostReply() calls = %d, want 1", gitlabClient.postReplyCalls)
+			}
+			if feedbackStore.updateSignalCalls != 1 {
+				t.Fatalf("UpdateSignal() calls = %d, want 1", feedbackStore.updateSignalCalls)
+			}
+			if replyStore.updateCompletedCalls != 1 {
+				t.Fatalf("UpdateCompleted() calls = %d, want 1", replyStore.updateCompletedCalls)
+			}
+			if replyStore.lastCompletedIntent != tt.expectedIntent {
+				t.Fatalf("UpdateCompleted() intent = %q, want %q", replyStore.lastCompletedIntent, tt.expectedIntent)
+			}
+			if replyStore.lastCompletedSignal == domain.FeedbackSignalNeutral {
+				t.Fatalf("UpdateCompleted() signal = %q, want non-neutral feedback persistence", replyStore.lastCompletedSignal)
+			}
+			if repoSettings.incrementFeedbackCalls != 1 {
+				t.Fatalf("IncrementFeedbackCount() calls = %d, want 1", repoSettings.incrementFeedbackCalls)
+			}
+			if gitlabClient.resolveDiscussionCalls != 0 {
+				t.Fatalf("ResolveDiscussion() calls = %d, want 0", gitlabClient.resolveDiscussionCalls)
+			}
+		})
+	}
+}
+
+func TestPipelineExecutePersistsThreadStateTransition(t *testing.T) {
+	replyStore := &fakeReplyJobStore{}
+	feedbackStore := &fakeReplyFeedbackStore{
+		feedback: &domain.ReviewFeedback{ThreadState: domain.Ptr(domain.ThreadStateOpen)},
+	}
+	gitlabClient := &fakeReplyGitLabClient{
+		discussion: &domain.GitLabDiscussion{
+			ID: "discussion-4",
+			Notes: []domain.GitLabNote{
+				{ID: 40, AuthorName: "bot", Body: "Please fix this", CreatedAt: time.Now()},
+				{ID: 41, AuthorName: "dev", Body: "fixed", CreatedAt: time.Now()},
+			},
+		},
+		mr: &domain.GitLabMR{IID: 7, Title: "MR", HeadSHA: "head"},
+	}
+
+	pipeline := NewPipeline(PipelineDeps{
+		Config:        testReplyConfig(),
+		ReplyJobStore: replyStore,
+		RepoSettings:  &fakeReplyRepoSettingsStore{},
+		FeedbackStore: feedbackStore,
+		GitLabClient:  gitlabClient,
+		ReplyAgent:    &fakeReplyAgent{reply: "thanks"},
+		RepoManager:   &fakeReplyRepoManager{},
+	})
+
+	job := &domain.ReplyJob{
+		ID:                 uuid.New(),
+		GitLabProjectID:    42,
+		MrIID:              7,
+		DiscussionID:       "discussion-4",
+		TriggerNoteContent: "fixed",
+		BotCommentID:       40,
+		BotCommentContent:  "Please fix this",
+	}
+
+	if err := pipeline.Execute(context.Background(), job); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if replyStore.lastThreadStateBefore != domain.ThreadStateOpen {
+		t.Fatalf("before state = %q, want %q", replyStore.lastThreadStateBefore, domain.ThreadStateOpen)
+	}
+	if replyStore.lastThreadStateAfter != domain.ThreadStatePendingVerification {
+		t.Fatalf("after state = %q, want %q", replyStore.lastThreadStateAfter, domain.ThreadStatePendingVerification)
+	}
+	if feedbackStore.lastUpdatedThreadState != domain.ThreadStatePendingVerification {
+		t.Fatalf("feedback thread state = %q, want %q", feedbackStore.lastUpdatedThreadState, domain.ThreadStatePendingVerification)
+	}
+}
+
+func TestPipelineExecutePersistsDismissedThreadStateForReject(t *testing.T) {
+	replyStore := &fakeReplyJobStore{}
+	feedbackStore := &fakeReplyFeedbackStore{
+		feedback: &domain.ReviewFeedback{ThreadState: domain.Ptr(domain.ThreadStateOpen)},
+	}
+	gitlabClient := &fakeReplyGitLabClient{
+		discussion: &domain.GitLabDiscussion{
+			ID: "discussion-5",
+			Notes: []domain.GitLabNote{
+				{ID: 50, AuthorName: "bot", Body: "Please fix this", CreatedAt: time.Now()},
+				{ID: 51, AuthorName: "dev", Body: "this is intentional by design", CreatedAt: time.Now()},
+			},
+		},
+		mr: &domain.GitLabMR{IID: 7, Title: "MR", HeadSHA: "head"},
+	}
+
+	pipeline := NewPipeline(PipelineDeps{
+		Config:        testReplyConfig(),
+		ReplyJobStore: replyStore,
+		RepoSettings:  &fakeReplyRepoSettingsStore{},
+		FeedbackStore: feedbackStore,
+		GitLabClient:  gitlabClient,
+		ReplyAgent:    &fakeReplyAgent{reply: "understood"},
+		RepoManager:   &fakeReplyRepoManager{},
+	})
+
+	job := &domain.ReplyJob{
+		ID:                 uuid.New(),
+		GitLabProjectID:    42,
+		MrIID:              7,
+		DiscussionID:       "discussion-5",
+		TriggerNoteContent: "this is intentional by design",
+		BotCommentID:       50,
+		BotCommentContent:  "Please fix this",
+	}
+
+	if err := pipeline.Execute(context.Background(), job); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if replyStore.lastThreadStateAfter != domain.ThreadStateDismissed {
+		t.Fatalf("after state = %q, want %q", replyStore.lastThreadStateAfter, domain.ThreadStateDismissed)
+	}
+}
+
+func TestPipelineExecutePersistsAcknowledgedThreadState(t *testing.T) {
+	replyStore := &fakeReplyJobStore{}
+	feedbackStore := &fakeReplyFeedbackStore{
+		feedback: &domain.ReviewFeedback{ThreadState: domain.Ptr(domain.ThreadStateOpen)},
+	}
+	gitlabClient := &fakeReplyGitLabClient{
+		discussion: &domain.GitLabDiscussion{
+			ID: "discussion-6",
+			Notes: []domain.GitLabNote{
+				{ID: 60, AuthorName: "bot", Body: "Please fix this", CreatedAt: time.Now()},
+				{ID: 61, AuthorName: "dev", Body: "noted, will address later", CreatedAt: time.Now()},
+			},
+		},
+		mr: &domain.GitLabMR{IID: 7, Title: "MR", HeadSHA: "head"},
+	}
+
+	pipeline := NewPipeline(PipelineDeps{
+		Config:        testReplyConfig(),
+		ReplyJobStore: replyStore,
+		RepoSettings:  &fakeReplyRepoSettingsStore{},
+		FeedbackStore: feedbackStore,
+		GitLabClient:  gitlabClient,
+		ReplyAgent:    &fakeReplyAgent{reply: "thanks for the update"},
+		RepoManager:   &fakeReplyRepoManager{},
+	})
+
+	job := &domain.ReplyJob{
+		ID:                 uuid.New(),
+		GitLabProjectID:    42,
+		MrIID:              7,
+		DiscussionID:       "discussion-6",
+		TriggerNoteContent: "noted, will address later",
+		BotCommentID:       60,
+		BotCommentContent:  "Please fix this",
+	}
+
+	if err := pipeline.Execute(context.Background(), job); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if replyStore.lastThreadStateAfter != domain.ThreadStateAcknowledged {
+		t.Fatalf("after state = %q, want %q", replyStore.lastThreadStateAfter, domain.ThreadStateAcknowledged)
 	}
 }
 

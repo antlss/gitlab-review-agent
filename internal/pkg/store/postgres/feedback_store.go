@@ -29,14 +29,16 @@ func (s *FeedbackStore) Create(ctx context.Context, feedback *domain.ReviewFeedb
 	_, err := s.db.NamedExecContext(ctx, `
 		INSERT INTO review_feedbacks (
 			id, gitlab_project_id, review_job_id, gitlab_discussion_id,
-			gitlab_note_id, file_path, line_number, category,
-			comment_summary, language, model_used,
-			created_at, updated_at
+			gitlab_note_id, review_mode, prompt_version, policy_version,
+			model_plan_version, file_path, line_number, category,
+			comment_summary, content_hash, semantic_fingerprint, location_fingerprint,
+			thread_state, language, model_used, created_at, updated_at
 		) VALUES (
 			:id, :gitlab_project_id, :review_job_id, :gitlab_discussion_id,
-			:gitlab_note_id, :file_path, :line_number, :category,
-			:comment_summary, :language, :model_used,
-			:created_at, :updated_at
+			:gitlab_note_id, :review_mode, :prompt_version, :policy_version,
+			:model_plan_version, :file_path, :line_number, :category,
+			:comment_summary, :content_hash, :semantic_fingerprint, :location_fingerprint,
+			:thread_state, :language, :model_used, :created_at, :updated_at
 		)`, feedback)
 	if err != nil {
 		return fmt.Errorf("create feedback: %w", err)
@@ -57,12 +59,12 @@ func (s *FeedbackStore) GetByNoteID(ctx context.Context, noteID int64) (*domain.
 	return &fb, nil
 }
 
-func (s *FeedbackStore) UpdateSignal(ctx context.Context, noteID int64, signal domain.FeedbackSignal, replyContent string) error {
+func (s *FeedbackStore) UpdateSignal(ctx context.Context, noteID int64, signal domain.FeedbackSignal, replyContent string, threadState domain.ThreadState) error {
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE review_feedbacks SET
-			signal = $1, signal_reply_content = $2, updated_at = NOW()
-		WHERE gitlab_note_id = $3`,
-		signal, replyContent, noteID)
+			signal = $1, thread_state = $2, signal_reply_content = $3, updated_at = NOW()
+		WHERE gitlab_note_id = $4`,
+		signal, threadState, replyContent, noteID)
 	if err != nil {
 		return fmt.Errorf("update feedback signal: %w", err)
 	}

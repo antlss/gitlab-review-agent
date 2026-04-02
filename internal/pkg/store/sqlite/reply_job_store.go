@@ -37,17 +37,19 @@ func (s *ReplyJobStore) Create(ctx context.Context, job *domain.ReplyJob) error 
 			id, gitlab_project_id, mr_iid, discussion_id,
 			trigger_note_id, trigger_note_content, trigger_note_author,
 			bot_comment_id, bot_comment_content, bot_comment_file_path,
-			bot_comment_line, status, queued_at, created_at, updated_at
+			bot_comment_line, status, thread_state_before, thread_state_after,
+			queued_at, created_at, updated_at
 		) VALUES (
 			?, ?, ?, ?,
 			?, ?, ?,
 			?, ?, ?,
-			?, ?, ?, ?, ?
+			?, ?, ?, ?,
+			?, ?, ?
 		)`,
 		job.ID.String(), job.GitLabProjectID, job.MrIID, job.DiscussionID,
 		job.TriggerNoteID, job.TriggerNoteContent, job.TriggerNoteAuthor,
 		job.BotCommentID, job.BotCommentContent, job.BotCommentFilePath,
-		job.BotCommentLine, string(job.Status),
+		job.BotCommentLine, string(job.Status), domain.DerefThreadState(job.ThreadStateBefore), domain.DerefThreadState(job.ThreadStateAfter),
 		now.Format(time.RFC3339), now.Format(time.RFC3339), now.Format(time.RFC3339))
 	if err != nil {
 		return fmt.Errorf("create reply job: %w", err)
@@ -89,14 +91,14 @@ func (s *ReplyJobStore) UpdateStatus(ctx context.Context, id uuid.UUID, status d
 	return nil
 }
 
-func (s *ReplyJobStore) UpdateCompleted(ctx context.Context, id uuid.UUID, reply string, intent domain.ReplyIntent, signal domain.FeedbackSignal) error {
+func (s *ReplyJobStore) UpdateCompleted(ctx context.Context, id uuid.UUID, reply string, intent domain.ReplyIntent, signal domain.FeedbackSignal, beforeState, afterState domain.ThreadState) error {
 	now := time.Now().Format(time.RFC3339)
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE reply_jobs SET
 			status = ?, reply_content = ?, intent_classified = ?,
-			feedback_signal = ?, completed_at = ?, updated_at = ?
+			feedback_signal = ?, thread_state_before = ?, thread_state_after = ?, completed_at = ?, updated_at = ?
 		WHERE id = ?`,
-		string(domain.ReplyJobStatusCompleted), reply, string(intent), string(signal), now, now, id.String())
+		string(domain.ReplyJobStatusCompleted), reply, string(intent), string(signal), string(beforeState), string(afterState), now, now, id.String())
 	if err != nil {
 		return fmt.Errorf("update reply completed: %w", err)
 	}

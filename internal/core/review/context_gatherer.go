@@ -116,11 +116,14 @@ func (g *ContextGatherer) Gather(ctx context.Context, job *domain.ReviewJob, dif
 			continue
 		}
 		ec := domain.ExistingComment{
-			Summary: domain.Truncate(firstNote.Body, 100),
+			Summary:             domain.Truncate(firstNote.Body, 100),
+			ContentHash:         buildContentHash(firstNote.Body),
+			SemanticFingerprint: buildSemanticFingerprint(domain.CommentCategory(""), firstNote.Body),
 		}
 		if firstNote.Position != nil {
 			ec.FilePath = firstNote.Position.FilePath
 			ec.LineNumber = firstNote.Position.NewLine
+			ec.LocationFingerprint = buildLocationFingerprint(ec.FilePath, ec.LineNumber, domain.CommentCategory(""))
 		}
 		rc.ExistingUnresolvedComments = append(rc.ExistingUnresolvedComments, ec)
 

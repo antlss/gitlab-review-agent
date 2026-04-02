@@ -24,6 +24,7 @@ type ReviewJobStore interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*ReviewJob, error)
 	UpdateStatus(ctx context.Context, id uuid.UUID, status ReviewJobStatus, errMsg *string) error
 	UpdateBaseSHA(ctx context.Context, id uuid.UUID, baseSHA string) error
+	UpdateSessionMetadata(ctx context.Context, id uuid.UUID, reviewMode, promptVersion, policyVersion, modelPlanVersion string, findingsBudget int) error
 	UpdateAIOutput(ctx context.Context, id uuid.UUID, raw string, parsed []ParsedComment, iterations, tokens int) error
 	UpdateCompleted(ctx context.Context, id uuid.UUID, posted, suppressed int) error
 	UpdateModelUsed(ctx context.Context, id uuid.UUID, model string) error
@@ -36,13 +37,13 @@ type ReplyJobStore interface {
 	Create(ctx context.Context, job *ReplyJob) error
 	GetByID(ctx context.Context, id uuid.UUID) (*ReplyJob, error)
 	UpdateStatus(ctx context.Context, id uuid.UUID, status ReplyJobStatus, errMsg *string) error
-	UpdateCompleted(ctx context.Context, id uuid.UUID, reply string, intent ReplyIntent, signal FeedbackSignal) error
+	UpdateCompleted(ctx context.Context, id uuid.UUID, reply string, intent ReplyIntent, signal FeedbackSignal, beforeState, afterState ThreadState) error
 }
 
 type FeedbackStore interface {
 	Create(ctx context.Context, feedback *ReviewFeedback) error
 	GetByNoteID(ctx context.Context, noteID int64) (*ReviewFeedback, error)
-	UpdateSignal(ctx context.Context, noteID int64, signal FeedbackSignal, replyContent string) error
+	UpdateSignal(ctx context.Context, noteID int64, signal FeedbackSignal, replyContent string, threadState ThreadState) error
 	ListForConsolidation(ctx context.Context, projectID int64, minAgeDays int) ([]*ReviewFeedback, error)
 	MarkConsolidated(ctx context.Context, ids []uuid.UUID) error
 	ListRecentByProject(ctx context.Context, projectID int64, limit int) ([]*ReviewFeedback, error)

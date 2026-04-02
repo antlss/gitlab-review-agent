@@ -36,18 +36,22 @@ func (s *FeedbackStore) Create(ctx context.Context, feedback *domain.ReviewFeedb
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO review_feedbacks (
 			id, gitlab_project_id, review_job_id, gitlab_discussion_id,
-			gitlab_note_id, file_path, line_number, category,
-			comment_summary, language, model_used,
-			created_at, updated_at
+			gitlab_note_id, review_mode, prompt_version, policy_version,
+			model_plan_version, file_path, line_number, category,
+			comment_summary, content_hash, semantic_fingerprint, location_fingerprint,
+			thread_state, language, model_used, created_at, updated_at
 		) VALUES (
 			?, ?, ?, ?,
 			?, ?, ?, ?,
-			?, ?, ?,
-			?, ?
+			?, ?, ?, ?,
+			?, ?, ?, ?,
+			?, ?, ?, ?, ?
 		)`,
 		feedback.ID.String(), feedback.GitLabProjectID, reviewJobID, feedback.GitLabDiscussionID,
-		feedback.GitLabNoteID, feedback.FilePath, feedback.LineNumber, domain.PtrCategoryToStr(feedback.Category),
-		feedback.CommentSummary, feedback.Language, feedback.ModelUsed,
+		feedback.GitLabNoteID, feedback.ReviewMode, feedback.PromptVersion, feedback.PolicyVersion,
+		feedback.ModelPlanVersion, feedback.FilePath, feedback.LineNumber, domain.PtrCategoryToStr(feedback.Category),
+		feedback.CommentSummary, feedback.ContentHash, feedback.SemanticFingerprint, feedback.LocationFingerprint,
+		feedback.ThreadState, feedback.Language, feedback.ModelUsed,
 		feedback.CreatedAt.Format(time.RFC3339), feedback.UpdatedAt.Format(time.RFC3339))
 	if err != nil {
 		return fmt.Errorf("create feedback: %w", err)
@@ -68,12 +72,12 @@ func (s *FeedbackStore) GetByNoteID(ctx context.Context, noteID int64) (*domain.
 	return &fb, nil
 }
 
-func (s *FeedbackStore) UpdateSignal(ctx context.Context, noteID int64, signal domain.FeedbackSignal, replyContent string) error {
+func (s *FeedbackStore) UpdateSignal(ctx context.Context, noteID int64, signal domain.FeedbackSignal, replyContent string, threadState domain.ThreadState) error {
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE review_feedbacks SET
-			signal = ?, signal_reply_content = ?, updated_at = ?
+			signal = ?, thread_state = ?, signal_reply_content = ?, updated_at = ?
 		WHERE gitlab_note_id = ?`,
-		string(signal), replyContent, time.Now().Format(time.RFC3339), noteID)
+		string(signal), string(threadState), replyContent, time.Now().Format(time.RFC3339), noteID)
 	if err != nil {
 		return fmt.Errorf("update feedback signal: %w", err)
 	}
