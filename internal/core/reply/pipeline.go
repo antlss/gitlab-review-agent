@@ -1,13 +1,10 @@
 package reply
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/antlss/gitlab-review-agent/internal/config"
@@ -25,7 +22,7 @@ type repoSyncer interface {
 	AcquireGitLock(ctx context.Context, projectID int64) error
 	ReleaseGitLock(ctx context.Context, projectID int64)
 	FetchAndCheckout(ctx context.Context, projectID int64, projectPath, headSHA string) error
-	RepoPath(projectID int64) string
+	ReadFileAtSHA(ctx context.Context, projectID int64, sha, filePath string) ([]byte, error)
 }
 
 type Pipeline struct {
@@ -94,12 +91,11 @@ func (p *Pipeline) Execute(ctx context.Context, job *domain.ReplyJob) error {
 	var codeContext string
 	var latestCodeContext string
 	if job.BotCommentFilePath != nil && job.BotCommentLine != nil {
-		repoPath, err := p.syncToLatestMRHead(ctx, job, mr, settings)
-		if err != nil {
+		if err := p.syncToLatestMRHead(ctx, job, mr, settings); err != nil {
 			return p.failJob(ctx, job, "sync latest repository state: "+err.Error())
 		}
 
-		codeContext = readFileLines(repoPath, *job.BotCommentFilePath, *job.BotCommentLine)
+		codeContext = p.readFileLinesAtSHA(ctx, job.GitLabProjectID, mr.HeadSHA, *job.BotCommentFilePath, *job.BotCommentLine)
 		if intent == domain.IntentAgree || intent == domain.IntentAcknowledge {
 			latestCodeContext = codeContext
 		}
@@ -177,12 +173,12 @@ func (p *Pipeline) syncToLatestMRHead(
 	job *domain.ReplyJob,
 	mr *domain.GitLabMR,
 	settings *domain.RepositorySettings,
-) (string, error) {
+) error {
 	if p.repoManager == nil {
-		return "", fmt.Errorf("repo manager is not configured")
+		return fmt.Errorf("repo manager is not configured")
 	}
 	if mr == nil || mr.HeadSHA == "" {
-		return "", fmt.Errorf("MR head SHA is unavailable")
+		return fmt.Errorf("MR head SHA is unavailable")
 	}
 
 	projectPath := ""
@@ -192,23 +188,60 @@ func (p *Pipeline) syncToLatestMRHead(
 	if projectPath == "" {
 		project, err := p.gitlabClient.GetProject(ctx, job.GitLabProjectID)
 		if err != nil {
-			return "", fmt.Errorf("load project: %w", err)
+			return fmt.Errorf("load project: %w", err)
 		}
 		projectPath = project.PathWithNS
 	}
 	if projectPath == "" {
-		return "", fmt.Errorf("project path is unavailable")
+		return fmt.Errorf("project path is unavailable")
 	}
 
 	if err := p.repoManager.AcquireGitLock(ctx, job.GitLabProjectID); err != nil {
-		return "", err
+		return err
 	}
 	defer p.repoManager.ReleaseGitLock(ctx, job.GitLabProjectID)
 
 	if err := p.repoManager.FetchAndCheckout(ctx, job.GitLabProjectID, projectPath, mr.HeadSHA); err != nil {
-		return "", err
+		return err
 	}
-	return p.repoManager.RepoPath(job.GitLabProjectID), nil
+	return nil
+}
+
+func (p *Pipeline) readFileLinesAtSHA(ctx context.Context, projectID int64, sha, filePath string, centerLine int) string {
+	content, err := p.repoManager.ReadFileAtSHA(ctx, projectID, sha, filePath)
+	if err != nil {
+		return ""
+	}
+
+	startLine := max(centerLine-20, 1)
+	endLine := centerLine + 20
+	allLines := strings.Split(string(content), "\n")
+	lines := make([]string, 0, min(len(allLines), endLine-startLine+1))
+	for i, line := range allLines {
+		lineNum := i + 1
+		if lineNum < startLine {
+			continue
+		}
+		if lineNum > endLine {
+			break
+		}
+		lines = append(lines, fmt.Sprintf("%d: %s", lineNum, line))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func formatThreadHistory(notes []domain.GitLabNote) string {
@@ -218,34 +251,4 @@ func formatThreadHistory(notes []domain.GitLabNote) string {
 		sb.WriteString(fmt.Sprintf("[%s] %s\n\n", role, n.Body))
 	}
 	return sb.String()
-}
-
-func readFileLines(repoPath, filePath string, centerLine int) string {
-	absPath := filepath.Join(repoPath, filePath)
-	file, err := os.Open(absPath)
-	if err != nil {
-		return ""
-	}
-	defer file.Close()
-
-	startLine := centerLine - 20
-	if startLine < 1 {
-		startLine = 1
-	}
-	endLine := centerLine + 20
-
-	var lines []string
-	scanner := bufio.NewScanner(file)
-	lineNum := 0
-	for scanner.Scan() {
-		lineNum++
-		if lineNum < startLine {
-			continue
-		}
-		if lineNum > endLine {
-			break
-		}
-		lines = append(lines, fmt.Sprintf("%d: %s", lineNum, scanner.Text()))
-	}
-	return strings.Join(lines, "\n")
 }

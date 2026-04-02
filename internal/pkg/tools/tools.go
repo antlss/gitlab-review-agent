@@ -1,12 +1,12 @@
 package tools
 
 import (
-	"bufio"
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -19,6 +19,8 @@ type ReadFileTool struct {
 	rootPath string
 	maxKB    int
 	maxLines int
+	headSHA  string
+	gitEnv   []string
 }
 
 func (t *ReadFileTool) Name() string { return "read_file" }
@@ -37,49 +39,44 @@ func (t *ReadFileTool) InputSchema() map[string]any {
 	}
 }
 
-func (t *ReadFileTool) Execute(_ context.Context, input domain.ToolInput) (*domain.ToolResult, error) {
+func (t *ReadFileTool) Execute(ctx context.Context, input domain.ToolInput) (*domain.ToolResult, error) {
 	path, _ := input["path"].(string)
 	if path == "" {
 		return toolError("path is required"), nil
 	}
 
-	absPath, err := securePath(t.rootPath, path)
+	repoPath, err := cleanRepoPath(t.rootPath, path)
 	if err != nil {
 		return toolError(err.Error()), nil
 	}
 
-	info, err := os.Stat(absPath)
+	size, err := gitBlobSize(ctx, t.rootPath, t.headSHA, repoPath, t.gitEnv)
 	if err != nil {
 		return toolError(fmt.Sprintf("file not found: %s", path)), nil
 	}
-	if info.IsDir() {
-		return toolError("path is a directory, use list_dir instead"), nil
-	}
-	if info.Size() > int64(t.maxKB)*1024 {
-		return toolError(fmt.Sprintf("file too large: %d KB (max %d KB)", info.Size()/1024, t.maxKB)), nil
+	if size > int64(t.maxKB)*1024 {
+		return toolError(fmt.Sprintf("file too large: %d KB (max %d KB)", size/1024, t.maxKB)), nil
 	}
 
-	file, err := os.Open(absPath)
+	content, err := gitShowFile(ctx, t.rootPath, t.headSHA, repoPath, t.gitEnv)
 	if err != nil {
 		return toolError(err.Error()), nil
 	}
-	defer file.Close()
 
 	startLine := domain.GetIntOr(input, "start_line", 1)
 	endLine := domain.GetIntOr(input, "end_line", 0)
+	allLines := strings.Split(string(content), "\n")
 
-	var lines []string
-	scanner := bufio.NewScanner(file)
-	lineNum := 0
-	for scanner.Scan() {
-		lineNum++
+	lines := make([]string, 0, min(len(allLines), t.maxLines))
+	for i, line := range allLines {
+		lineNum := i + 1
 		if lineNum < startLine {
 			continue
 		}
 		if endLine > 0 && lineNum > endLine {
 			break
 		}
-		lines = append(lines, fmt.Sprintf("%d: %s", lineNum, scanner.Text()))
+		lines = append(lines, fmt.Sprintf("%d: %s", lineNum, line))
 		if len(lines) >= t.maxLines {
 			lines = append(lines, fmt.Sprintf("... (truncated at %d lines)", t.maxLines))
 			break
@@ -130,7 +127,6 @@ func (t *GetMultiDiffTool) Execute(ctx context.Context, input domain.ToolInput) 
 		if path == "" {
 			continue
 		}
-		// Find the diff file info
 		var found bool
 		for _, df := range t.diffFiles {
 			if df.Path == path {
@@ -143,7 +139,6 @@ func (t *GetMultiDiffTool) Execute(ctx context.Context, input domain.ToolInput) 
 			continue
 		}
 
-		// Run git diff for this file using the actual MR base..head range
 		cmd := exec.CommandContext(ctx, "git", "diff", t.baseSHA+".."+t.headSHA, "--", path)
 		cmd.Dir = t.rootPath
 		if len(t.gitEnv) > 0 {
@@ -169,11 +164,13 @@ func (t *GetMultiDiffTool) Execute(ctx context.Context, input domain.ToolInput) 
 type SearchCodeTool struct {
 	rootPath   string
 	maxResults int
+	headSHA    string
+	gitEnv     []string
 }
 
 func (t *SearchCodeTool) Name() string { return "search_code" }
 func (t *SearchCodeTool) Description() string {
-	return "Search for a pattern in the codebase using grep. Returns matching lines with file paths and line numbers."
+	return "Search for a pattern in the codebase using git grep. Returns matching lines with file paths and line numbers."
 }
 func (t *SearchCodeTool) InputSchema() map[string]any {
 	return map[string]any{
@@ -193,41 +190,39 @@ func (t *SearchCodeTool) Execute(ctx context.Context, input domain.ToolInput) (*
 		return toolError("pattern is required"), nil
 	}
 
-	// Sanitize: reject shell-dangerous characters in pattern
 	for _, ch := range []string{";", "|", "&", "$", "`", "(", ")", "{", "}", "<", ">"} {
 		if strings.Contains(pattern, ch) {
 			return toolError("pattern contains unsafe characters"), nil
 		}
 	}
 
-	args := []string{"-rn", "--max-count", strconv.Itoa(t.maxResults)}
+	caseSensitive := true
+	if cs, ok := input["case_sensitive"].(bool); ok {
+		caseSensitive = cs
+	}
 
-	// Default to case-sensitive (grep's natural behavior).
-	// Only add -i when the caller explicitly sets case_sensitive=false.
-	if cs, ok := input["case_sensitive"].(bool); ok && !cs {
+	args := []string{"grep", "-n", "-E", "--max-count", strconv.Itoa(t.maxResults)}
+	if !caseSensitive {
 		args = append(args, "-i")
 	}
+	args = append(args, "-e", pattern, t.headSHA)
 
-	if fp, ok := input["file_pattern"].(string); ok && fp != "" {
-		args = append(args, "--include", fp)
-	}
-
-	args = append(args, pattern, ".")
-
-	cmd := exec.CommandContext(ctx, "grep", args...)
+	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = t.rootPath
-	out, _ := cmd.CombinedOutput() // grep returns exit 1 if no matches
+	if len(t.gitEnv) > 0 {
+		cmd.Env = t.gitEnv
+	}
+	out, _ := cmd.CombinedOutput()
 
-	content := string(out)
+	content := normalizeGitGrepOutput(string(out), t.headSHA)
+	if fp, ok := input["file_pattern"].(string); ok && fp != "" {
+		content = filterGitGrepOutputByPattern(content, fp)
+	}
+	content = limitOutputLines(strings.TrimSpace(content), t.maxResults, "... (showing first %d results)")
 	if content == "" {
 		content = "No matches found."
 	}
-	lines := strings.Split(content, "\n")
-	if len(lines) > t.maxResults {
-		lines = lines[:t.maxResults]
-		lines = append(lines, fmt.Sprintf("... (showing first %d results)", t.maxResults))
-	}
-	return &domain.ToolResult{Content: strings.Join(lines, "\n")}, nil
+	return &domain.ToolResult{Content: content}, nil
 }
 
 // ─── read_multi_file ────────────────────────────────────────────────────────────
@@ -237,6 +232,8 @@ type ReadMultiFileTool struct {
 	maxFiles  int
 	perFileKB int
 	maxLines  int
+	headSHA   string
+	gitEnv    []string
 }
 
 func (t *ReadMultiFileTool) Name() string { return "read_multi_file" }
@@ -253,7 +250,7 @@ func (t *ReadMultiFileTool) InputSchema() map[string]any {
 	}
 }
 
-func (t *ReadMultiFileTool) Execute(_ context.Context, input domain.ToolInput) (*domain.ToolResult, error) {
+func (t *ReadMultiFileTool) Execute(ctx context.Context, input domain.ToolInput) (*domain.ToolResult, error) {
 	pathsRaw, _ := input["paths"].([]any)
 	if len(pathsRaw) == 0 {
 		return toolError("paths is required"), nil
@@ -268,22 +265,23 @@ func (t *ReadMultiFileTool) Execute(_ context.Context, input domain.ToolInput) (
 		if path == "" {
 			continue
 		}
-		absPath, err := securePath(t.rootPath, path)
+		repoPath, err := cleanRepoPath(t.rootPath, path)
 		if err != nil {
 			fmt.Fprintf(&result, "--- %s: %s ---\n", path, err.Error())
 			continue
 		}
-		info, err := os.Stat(absPath)
+
+		size, err := gitBlobSize(ctx, t.rootPath, t.headSHA, repoPath, t.gitEnv)
 		if err != nil {
 			fmt.Fprintf(&result, "--- %s: not found ---\n", path)
 			continue
 		}
-		if info.Size() > int64(t.perFileKB)*1024 {
-			fmt.Fprintf(&result, "--- %s: too large (%d KB) ---\n", path, info.Size()/1024)
+		if size > int64(t.perFileKB)*1024 {
+			fmt.Fprintf(&result, "--- %s: too large (%d KB) ---\n", path, size/1024)
 			continue
 		}
 
-		content, err := os.ReadFile(absPath)
+		content, err := gitShowFile(ctx, t.rootPath, t.headSHA, repoPath, t.gitEnv)
 		if err != nil {
 			fmt.Fprintf(&result, "--- %s: read error ---\n", path)
 			continue
@@ -304,6 +302,8 @@ func (t *ReadMultiFileTool) Execute(_ context.Context, input domain.ToolInput) (
 
 type ListDirTool struct {
 	rootPath string
+	headSHA  string
+	gitEnv   []string
 }
 
 func (t *ListDirTool) Name() string { return "list_dir" }
@@ -319,51 +319,25 @@ func (t *ListDirTool) InputSchema() map[string]any {
 	}
 }
 
-func (t *ListDirTool) Execute(_ context.Context, input domain.ToolInput) (*domain.ToolResult, error) {
+func (t *ListDirTool) Execute(ctx context.Context, input domain.ToolInput) (*domain.ToolResult, error) {
 	path, _ := input["path"].(string)
 	if path == "" {
 		path = "."
 	}
 
-	absPath, err := securePath(t.rootPath, path)
+	prefix, err := cleanRepoDir(t.rootPath, path)
 	if err != nil {
 		return toolError(err.Error()), nil
 	}
 
-	var result strings.Builder
-	walkDir(absPath, t.rootPath, "", 0, 3, &result)
-
-	return &domain.ToolResult{Content: result.String()}, nil
-}
-
-func walkDir(dir, root, prefix string, depth, maxDepth int, result *strings.Builder) {
-	if depth >= maxDepth {
-		return
-	}
-	entries, err := os.ReadDir(dir)
+	files, err := gitListFiles(ctx, t.rootPath, t.headSHA, prefix, t.gitEnv)
 	if err != nil {
-		return
+		return toolError(err.Error()), nil
 	}
-	for i, entry := range entries {
-		if entry.Name() == ".git" {
-			continue
-		}
-		isLast := i == len(entries)-1
-		connector := "├── "
-		childPrefix := prefix + "│   "
-		if isLast {
-			connector = "└── "
-			childPrefix = prefix + "    "
-		}
-		name := entry.Name()
-		if entry.IsDir() {
-			name += "/"
-		}
-		result.WriteString(prefix + connector + name + "\n")
-		if entry.IsDir() {
-			walkDir(filepath.Join(dir, entry.Name()), root, childPrefix, depth+1, maxDepth, result)
-		}
+	if len(files) == 0 {
+		return &domain.ToolResult{Content: "(empty)"}, nil
 	}
+	return &domain.ToolResult{Content: renderTree(files, prefix, 3)}, nil
 }
 
 // ─── get_symbol_definition ──────────────────────────────────────────────────────
@@ -371,6 +345,8 @@ func walkDir(dir, root, prefix string, depth, maxDepth int, result *strings.Buil
 type GetSymbolDefinitionTool struct {
 	rootPath   string
 	maxResults int
+	headSHA    string
+	gitEnv     []string
 }
 
 func (t *GetSymbolDefinitionTool) Name() string { return "get_symbol_definition" }
@@ -395,52 +371,32 @@ func (t *GetSymbolDefinitionTool) Execute(ctx context.Context, input domain.Tool
 	}
 
 	lang, _ := input["language"].(string)
+	patterns := definitionPatterns(symbol, lang)
 
-	// Build language-specific patterns
-	var patterns []string
-	switch strings.ToLower(lang) {
-	case "go":
-		patterns = []string{
-			fmt.Sprintf(`func\s+(\([^)]+\)\s+)?%s\s*\(`, symbol),
-			fmt.Sprintf(`type\s+%s\s+(struct|interface)`, symbol),
-			fmt.Sprintf(`var\s+%s\s+`, symbol),
-			fmt.Sprintf(`const\s+%s\s+`, symbol),
-		}
-	case "typescript", "javascript", "ts", "js":
-		patterns = []string{
-			fmt.Sprintf(`(function|const|let|var|class|interface|type|enum)\s+%s`, symbol),
-			fmt.Sprintf(`export\s+(default\s+)?(function|const|let|var|class|interface|type|enum)\s+%s`, symbol),
-		}
-	case "python":
-		patterns = []string{
-			fmt.Sprintf(`(def|class)\s+%s`, symbol),
-		}
-	case "java":
-		patterns = []string{
-			fmt.Sprintf(`(class|interface|enum)\s+%s`, symbol),
-			fmt.Sprintf(`(public|private|protected|static).*\s+%s\s*\(`, symbol),
-		}
-	default:
-		patterns = []string{
-			fmt.Sprintf(`(func|function|def|class|interface|type|struct|enum|const|var|let)\s+%s`, symbol),
-		}
-	}
-
-	var result strings.Builder
+	var lines []string
 	for _, pattern := range patterns {
-		cmd := exec.CommandContext(ctx, "grep", "-rn", "-E", pattern, "--max-count", "20", ".")
+		cmd := exec.CommandContext(ctx, "git", "grep", "-n", "-E", "--max-count", strconv.Itoa(t.maxResults), "-e", pattern, t.headSHA)
 		cmd.Dir = t.rootPath
+		if len(t.gitEnv) > 0 {
+			cmd.Env = t.gitEnv
+		}
 		out, _ := cmd.CombinedOutput()
-		if len(out) > 0 {
-			result.Write(out)
+		for _, line := range strings.Split(normalizeGitGrepOutput(string(out), t.headSHA), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			lines = append(lines, line)
+			if len(lines) >= t.maxResults {
+				return &domain.ToolResult{Content: strings.Join(lines, "\n")}, nil
+			}
 		}
 	}
 
-	content := result.String()
-	if content == "" {
-		content = fmt.Sprintf("No definition found for symbol '%s'", symbol)
+	if len(lines) == 0 {
+		return &domain.ToolResult{Content: fmt.Sprintf("No definition found for symbol '%s'", symbol)}, nil
 	}
-	return &domain.ToolResult{Content: content}, nil
+	return &domain.ToolResult{Content: strings.Join(lines, "\n")}, nil
 }
 
 // ─── get_git_log ────────────────────────────────────────────────────────────────
@@ -494,6 +450,8 @@ func (t *GetGitLogTool) Execute(ctx context.Context, input domain.ToolInput) (*d
 type GetFileOutlineTool struct {
 	rootPath   string
 	maxResults int
+	headSHA    string
+	gitEnv     []string
 }
 
 func (t *GetFileOutlineTool) Name() string { return "get_file_outline" }
@@ -516,33 +474,32 @@ func (t *GetFileOutlineTool) Execute(ctx context.Context, input domain.ToolInput
 		return toolError("path is required"), nil
 	}
 
-	absPath, err := securePath(t.rootPath, path)
+	repoPath, err := cleanRepoPath(t.rootPath, path)
 	if err != nil {
 		return toolError(err.Error()), nil
 	}
 
-	if _, err := os.Stat(absPath); err != nil {
+	content, err := gitShowFile(ctx, t.rootPath, t.headSHA, repoPath, t.gitEnv)
+	if err != nil {
 		return toolError(fmt.Sprintf("file not found: %s", path)), nil
 	}
 
-	ext := filepath.Ext(path)
-	pattern := outlinePattern(ext)
-
-	cmd := exec.CommandContext(ctx, "grep", "-n", "--color=never", "-E", pattern, absPath)
-	out, _ := cmd.CombinedOutput() // grep returns exit 1 if no matches
-
-	content := strings.TrimSpace(string(out))
-	if content == "" {
-		content = fmt.Sprintf("No top-level definitions found in %s", path)
-	} else {
-		lines := strings.Split(content, "\n")
-		if len(lines) > t.maxResults {
-			lines = lines[:t.maxResults]
-			lines = append(lines, fmt.Sprintf("... (truncated at %d results)", t.maxResults))
+	re := regexp.MustCompile(outlinePattern(filepath.Ext(repoPath)))
+	var lines []string
+	for i, line := range strings.Split(string(content), "\n") {
+		if re.MatchString(line) {
+			lines = append(lines, fmt.Sprintf("%d:%s", i+1, line))
+			if len(lines) >= t.maxResults {
+				lines = append(lines, fmt.Sprintf("... (truncated at %d results)", t.maxResults))
+				break
+			}
 		}
-		content = strings.Join(lines, "\n")
 	}
-	return &domain.ToolResult{Content: content}, nil
+
+	if len(lines) == 0 {
+		return &domain.ToolResult{Content: fmt.Sprintf("No top-level definitions found in %s", path)}, nil
+	}
+	return &domain.ToolResult{Content: strings.Join(lines, "\n")}, nil
 }
 
 func outlinePattern(ext string) string {
@@ -601,15 +558,218 @@ func (t *SaveNoteTool) Execute(_ context.Context, input domain.ToolInput) (*doma
 
 // ─── Helpers ────────────────────────────────────────────────────────────────────
 
+func cleanRepoPath(root, path string) (string, error) {
+	abs, err := securePath(root, path)
+	if err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(root, abs)
+	if err != nil {
+		return "", err
+	}
+	return filepath.ToSlash(rel), nil
+}
+
+func cleanRepoDir(root, path string) (string, error) {
+	rel, err := cleanRepoPath(root, path)
+	if err != nil {
+		return "", err
+	}
+	if rel == "." {
+		return "", nil
+	}
+	return strings.TrimSuffix(rel, "/"), nil
+}
+
+func gitCommand(ctx context.Context, rootPath string, gitEnv []string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = rootPath
+	if len(gitEnv) > 0 {
+		cmd.Env = gitEnv
+	}
+	return cmd.CombinedOutput()
+}
+
+func gitShowFile(ctx context.Context, rootPath, sha, path string, gitEnv []string) ([]byte, error) {
+	return gitCommand(ctx, rootPath, gitEnv, "show", fmt.Sprintf("%s:%s", sha, path))
+}
+
+func gitBlobSize(ctx context.Context, rootPath, sha, path string, gitEnv []string) (int64, error) {
+	out, err := gitCommand(ctx, rootPath, gitEnv, "cat-file", "-s", fmt.Sprintf("%s:%s", sha, path))
+	if err != nil {
+		return 0, err
+	}
+	return strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64)
+}
+
+func gitListFiles(ctx context.Context, rootPath, sha, dir string, gitEnv []string) ([]string, error) {
+	args := []string{"ls-tree", "-r", "--name-only", sha}
+	if dir != "" {
+		args = append(args, dir)
+	}
+	out, err := gitCommand(ctx, rootPath, gitEnv, args...)
+	if err != nil {
+		return nil, err
+	}
+	var files []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			files = append(files, line)
+		}
+	}
+	return files, nil
+}
+
+func normalizeGitGrepOutput(content, sha string) string {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return ""
+	}
+	prefix := sha + ":"
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		lines[i] = strings.TrimPrefix(line, prefix)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func filterGitGrepOutputByPattern(content, pattern string) string {
+	if content == "" || pattern == "" {
+		return content
+	}
+	var lines []string
+	for _, line := range strings.Split(content, "\n") {
+		parts := strings.SplitN(line, ":", 3)
+		if len(parts) < 3 {
+			continue
+		}
+		if matchesFilePattern(pattern, parts[0]) {
+			lines = append(lines, line)
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func matchesFilePattern(pattern, path string) bool {
+	if matched, _ := filepath.Match(pattern, path); matched {
+		return true
+	}
+	if matched, _ := filepath.Match(pattern, filepath.Base(path)); matched {
+		return true
+	}
+	return false
+}
+
+func limitOutputLines(content string, maxLines int, suffixFormat string) string {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return ""
+	}
+	lines := strings.Split(content, "\n")
+	if len(lines) > maxLines {
+		lines = lines[:maxLines]
+		lines = append(lines, fmt.Sprintf(suffixFormat, maxLines))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func definitionPatterns(symbol, lang string) []string {
+	switch strings.ToLower(lang) {
+	case "go":
+		return []string{
+			fmt.Sprintf(`func\s+(\([^)]+\)\s+)?%s\s*\(`, symbol),
+			fmt.Sprintf(`type\s+%s\s+(struct|interface)`, symbol),
+			fmt.Sprintf(`var\s+%s\s+`, symbol),
+			fmt.Sprintf(`const\s+%s\s+`, symbol),
+		}
+	case "typescript", "javascript", "ts", "js":
+		return []string{
+			fmt.Sprintf(`(function|const|let|var|class|interface|type|enum)\s+%s`, symbol),
+			fmt.Sprintf(`export\s+(default\s+)?(function|const|let|var|class|interface|type|enum)\s+%s`, symbol),
+		}
+	case "python":
+		return []string{
+			fmt.Sprintf(`(def|class)\s+%s`, symbol),
+		}
+	case "java":
+		return []string{
+			fmt.Sprintf(`(class|interface|enum)\s+%s`, symbol),
+			fmt.Sprintf(`(public|private|protected|static).*\s+%s\s*\(`, symbol),
+		}
+	default:
+		return []string{
+			fmt.Sprintf(`(func|function|def|class|interface|type|struct|enum|const|var|let)\s+%s`, symbol),
+		}
+	}
+}
+
+type treeNode struct {
+	name     string
+	isDir    bool
+	children map[string]*treeNode
+}
+
+func renderTree(files []string, prefix string, maxDepth int) string {
+	root := &treeNode{isDir: true, children: make(map[string]*treeNode)}
+	for _, file := range files {
+		rel := strings.TrimPrefix(file, prefix)
+		rel = strings.TrimPrefix(rel, "/")
+		if rel == "" {
+			continue
+		}
+		parts := strings.Split(rel, "/")
+		node := root
+		for i, part := range parts {
+			isDir := i < len(parts)-1
+			child, ok := node.children[part]
+			if !ok {
+				child = &treeNode{name: part, isDir: isDir, children: make(map[string]*treeNode)}
+				node.children[part] = child
+			}
+			node = child
+		}
+	}
+
+	var sb strings.Builder
+	renderTreeNode(&sb, root, "", 0, maxDepth)
+	return strings.TrimSpace(sb.String())
+}
+
+func renderTreeNode(sb *strings.Builder, node *treeNode, prefix string, depth, maxDepth int) {
+	if depth >= maxDepth {
+		return
+	}
+	keys := make([]string, 0, len(node.children))
+	for name := range node.children {
+		keys = append(keys, name)
+	}
+	sort.Strings(keys)
+	for i, name := range keys {
+		child := node.children[name]
+		connector := "├── "
+		nextPrefix := prefix + "│   "
+		if i == len(keys)-1 {
+			connector = "└── "
+			nextPrefix = prefix + "    "
+		}
+		display := child.name
+		if child.isDir {
+			display += "/"
+		}
+		sb.WriteString(prefix + connector + display + "\n")
+		if child.isDir {
+			renderTreeNode(sb, child, nextPrefix, depth+1, maxDepth)
+		}
+	}
+}
+
 func securePath(root, path string) (string, error) {
-	// Prevent path traversal
 	cleaned := filepath.Clean(path)
 	if strings.HasPrefix(cleaned, "..") || filepath.IsAbs(cleaned) {
 		return "", fmt.Errorf("path traversal not allowed: %s", path)
 	}
 	abs := filepath.Join(root, cleaned)
-	// Verify it's still under root. Use root+separator to prevent prefix collision:
-	// e.g. root="/repos/123" must not match abs="/repos/1234/file".
 	if !strings.HasPrefix(abs, root+string(filepath.Separator)) && abs != root {
 		return "", fmt.Errorf("path traversal not allowed: %s", path)
 	}

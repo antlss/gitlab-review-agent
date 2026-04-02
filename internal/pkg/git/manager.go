@@ -16,12 +16,15 @@ import (
 	"log/slog"
 
 	"github.com/antlss/gitlab-review-agent/internal/domain"
+	gogit "github.com/go-git/go-git/v5"
+	gitconfig "github.com/go-git/go-git/v5/config"
+	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
 )
 
 const (
 	gitLockTimeout  = 2 * time.Minute
-	cloneMaxRetries = 2
-	cloneRetryDelay = 3 * time.Second
+	cloneMaxRetries = 5
+	cloneRetryDelay = 15 * time.Second
 )
 
 // hunkHeaderRe matches unified diff hunk headers: @@ -old,count +new,count @@
@@ -79,39 +82,118 @@ func (m *Manager) ReleaseGitLock(_ context.Context, projectID int64) {
 	m.lockMu.Unlock()
 }
 
-// FetchAndCheckout clones or fetches the repo, then checks out the given SHA.
+// FetchAndCheckout clones or fetches the repo, then ensures the given SHA exists locally.
+// The repository is intentionally left without checkout so callers can read blobs by SHA
+// without forcing full working tree materialization for large repositories.
 func (m *Manager) FetchAndCheckout(ctx context.Context, projectID int64, projectPath, headSHA string) error {
 	repoPath := m.RepoPath(projectID)
+	cloneURL := fmt.Sprintf("%s/%s.git", m.gitlabURL, projectPath)
 
-	if _, err := os.Stat(repoPath); os.IsNotExist(err) {
-		cloneURL := fmt.Sprintf("%s/%s.git", m.gitlabURL, projectPath)
-		if err := m.cloneWithRetry(ctx, cloneURL, repoPath); err != nil {
-			return fmt.Errorf("git clone: %w", err)
-		}
-	} else {
-		if err := m.runGit(ctx, repoPath, "fetch", "origin", "--prune"); err != nil {
-			// Retry once
-			if err2 := m.runGit(ctx, repoPath, "fetch", "origin", "--prune"); err2 != nil {
-				return fmt.Errorf("git fetch failed after retry: %w", err2)
-			}
+	cloned, err := m.ensureFullClone(ctx, repoPath, cloneURL)
+	if err != nil {
+		return fmt.Errorf("git clone: %w", err)
+	}
+
+	if !cloned {
+		if err := m.fetchWithRetry(ctx, repoPath); err != nil {
+			return fmt.Errorf("git fetch failed after retry: %w", err)
 		}
 	}
 
 	// Verify head SHA exists
 	if err := m.runGit(ctx, repoPath, "cat-file", "-t", headSHA); err != nil {
-		// Retry fetch
-		_ = m.runGit(ctx, repoPath, "fetch", "origin", "--prune")
+		_ = m.fetchWithRetry(ctx, repoPath)
 		if err2 := m.runGit(ctx, repoPath, "cat-file", "-t", headSHA); err2 != nil {
 			return fmt.Errorf("sha_not_found: %s", headSHA)
 		}
 	}
 
-	// Checkout
-	if err := m.runGit(ctx, repoPath, "checkout", "--force", headSHA); err != nil {
-		return fmt.Errorf("checkout_failed: %w", err)
+	return nil
+}
+
+func (m *Manager) ReadFileAtSHA(ctx context.Context, projectID int64, sha, filePath string) ([]byte, error) {
+	repoPath := m.RepoPath(projectID)
+	out, err := m.runGitOutput(ctx, repoPath, "show", fmt.Sprintf("%s:%s", sha, filePath))
+	if err != nil {
+		return nil, err
+	}
+	return []byte(out), nil
+}
+
+func (m *Manager) GrepAtSHA(ctx context.Context, projectID int64, sha, pattern string, args ...string) (string, error) {
+	repoPath := m.RepoPath(projectID)
+	gitArgs := []string{"grep"}
+	gitArgs = append(gitArgs, args...)
+	gitArgs = append(gitArgs, pattern, sha)
+	return m.runGitOutput(ctx, repoPath, gitArgs...)
+}
+
+func (m *Manager) ListFilesAtSHA(ctx context.Context, projectID int64, sha, dir string) ([]string, error) {
+	repoPath := m.RepoPath(projectID)
+	args := []string{"ls-tree", "-r", "--name-only", sha}
+	if dir != "" && dir != "." {
+		args = append(args, dir)
+	}
+	out, err := m.runGitOutput(ctx, repoPath, args...)
+	if err != nil {
+		return nil, err
+	}
+	var files []string
+	for line := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			files = append(files, line)
+		}
+	}
+	return files, nil
+}
+
+func (m *Manager) GetFileSizeAtSHA(ctx context.Context, projectID int64, sha, filePath string) (int64, error) {
+	repoPath := m.RepoPath(projectID)
+	out, err := m.runGitOutput(ctx, repoPath, "cat-file", "-s", fmt.Sprintf("%s:%s", sha, filePath))
+	if err != nil {
+		return 0, err
+	}
+	size, convErr := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
+	if convErr != nil {
+		return 0, convErr
+	}
+	return size, nil
+}
+
+func (m *Manager) FileExistsAtSHA(ctx context.Context, projectID int64, sha, filePath string) bool {
+	repoPath := m.RepoPath(projectID)
+	return m.runGit(ctx, repoPath, "cat-file", "-e", fmt.Sprintf("%s:%s", sha, filePath)) == nil
+}
+
+func (m *Manager) ensureFullClone(ctx context.Context, repoPath, cloneURL string) (bool, error) {
+	reason := repoRecloneReason(repoPath)
+	if reason == "" {
+		return false, nil
 	}
 
-	return nil
+	if _, err := os.Stat(repoPath); err == nil {
+		slog.Info("replacing repo cache with full clone",
+			"path", repoPath,
+			"reason", reason,
+		)
+		if err := os.RemoveAll(repoPath); err != nil {
+			return false, fmt.Errorf("remove existing repo: %w", err)
+		}
+	}
+
+	if err := m.cloneWithRetry(ctx, cloneURL, repoPath); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func repoRecloneReason(repoPath string) string {
+	gitDir := filepath.Join(repoPath, ".git")
+	if _, err := os.Stat(gitDir); err != nil {
+		return "missing_git_dir"
+	}
+	return ""
 }
 
 // IsAncestor checks if beforeSHA is an ancestor of headSHA (force-push detection).
@@ -256,25 +338,23 @@ func (m *Manager) getAddedLines(ctx context.Context, repoPath, baseSHA, headSHA,
 // existing repo was updated (or was already up to date after a failed fetch).
 func (m *Manager) CloneOrFetch(ctx context.Context, projectID int64, cloneURL string) (cloned bool, err error) {
 	repoPath := m.RepoPath(projectID)
-	gitDir := filepath.Join(repoPath, ".git")
 
-	if _, statErr := os.Stat(gitDir); statErr == nil {
+	cloned, err = m.ensureFullClone(ctx, repoPath, cloneURL)
+	if err != nil {
+		return false, fmt.Errorf("clone: %w", err)
+	}
+	if cloned {
+		return true, nil
+	}
+
+	if _, statErr := os.Stat(filepath.Join(repoPath, ".git")); statErr == nil {
 		// Repo exists — fetch updates with retry
 		if fetchErr := m.fetchWithRetry(ctx, repoPath); fetchErr != nil {
 			return false, fmt.Errorf("fetch: %w", fetchErr)
 		}
 		return false, nil
 	}
-
-	// If the directory exists but has no .git, it is corrupt/partial — remove it
-	if _, statErr := os.Stat(repoPath); statErr == nil {
-		_ = os.RemoveAll(repoPath)
-	}
-
-	if cloneErr := m.cloneWithRetry(ctx, cloneURL, repoPath); cloneErr != nil {
-		return false, fmt.Errorf("clone: %w", cloneErr)
-	}
-	return true, nil
+	return false, fmt.Errorf("clone: repository missing after clone preparation")
 }
 
 // fetchWithRetry runs git fetch with exponential backoff to tolerate transient
@@ -304,18 +384,24 @@ func (m *Manager) fetchWithRetry(ctx context.Context, repoPath string) error {
 		}
 		return nil
 	}
-	return lastErr
+
+	slog.Warn("git fetch via CLI failed, falling back to go-git",
+		"path", repoPath,
+		"error", lastErr,
+	)
+	return m.fetchWithGoGit(ctx, repoPath)
 }
 
 // cloneWithRetry clones a repo with retry logic and cleanup on failure.
-// Uses --filter=blob:none for partial clone (downloads blobs on demand) to
-// reduce initial transfer size and avoid HTTP transport failures on large repos.
+// The clone intentionally keeps all blobs local to avoid checkout-time fetches
+// against promisor remotes during review jobs.
 func (m *Manager) cloneWithRetry(ctx context.Context, cloneURL, repoPath string) error {
 	var lastErr error
+	backoff := cloneRetryDelay
 	for attempt := 1; attempt <= cloneMaxRetries; attempt++ {
 		if err := m.runGit(ctx, "", "clone", "--no-checkout", "--filter=blob:none", cloneURL, repoPath); err != nil {
 			lastErr = err
-			// Clean up partial clone directory to avoid corrupted state
+			// Clean up failed clone directory to avoid corrupted state.
 			_ = os.RemoveAll(repoPath)
 			slog.Warn("git clone failed, retrying",
 				"attempt", attempt,
@@ -326,14 +412,64 @@ func (m *Manager) cloneWithRetry(ctx context.Context, cloneURL, repoPath string)
 				select {
 				case <-ctx.Done():
 					return ctx.Err()
-				case <-time.After(cloneRetryDelay):
+				case <-time.After(backoff):
 				}
+				backoff = min(backoff*2, 2*time.Minute)
 			}
 			continue
 		}
 		return nil
 	}
-	return lastErr
+
+	slog.Warn("git clone via CLI failed, falling back to go-git",
+		"path", repoPath,
+		"error", lastErr,
+	)
+	return m.cloneWithGoGit(ctx, cloneURL, repoPath)
+}
+
+func (m *Manager) cloneWithGoGit(ctx context.Context, cloneURL, repoPath string) error {
+	_ = os.RemoveAll(repoPath)
+
+	_, err := gogit.PlainCloneContext(ctx, repoPath, false, &gogit.CloneOptions{
+		URL:        cloneURL,
+		Auth:       m.goGitAuth(),
+		NoCheckout: true,
+	})
+	if err != nil {
+		_ = os.RemoveAll(repoPath)
+		return err
+	}
+	return nil
+}
+
+func (m *Manager) fetchWithGoGit(ctx context.Context, repoPath string) error {
+	repo, err := gogit.PlainOpen(repoPath)
+	if err != nil {
+		return err
+	}
+
+	err = repo.FetchContext(ctx, &gogit.FetchOptions{
+		RemoteName: "origin",
+		Auth:       m.goGitAuth(),
+		RefSpecs:   []gitconfig.RefSpec{"+refs/heads/*:refs/remotes/origin/*"},
+		Force:      true,
+		Prune:      true,
+	})
+	if err == gogit.NoErrAlreadyUpToDate {
+		return nil
+	}
+	return err
+}
+
+func (m *Manager) goGitAuth() *githttp.BasicAuth {
+	if m.gitlabToken == "" {
+		return nil
+	}
+	return &githttp.BasicAuth{
+		Username: "oauth2",
+		Password: m.gitlabToken,
+	}
 }
 
 // GitEnv returns environment variables for git commands that inject the GitLab
@@ -343,21 +479,29 @@ func (m *Manager) cloneWithRetry(ctx context.Context, cloneURL, repoPath string)
 func (m *Manager) GitEnv() []string {
 	if m.gitlabToken == "" {
 		return append(os.Environ(),
-			"GIT_CONFIG_COUNT=2",
+			"GIT_CONFIG_COUNT=4",
 			"GIT_CONFIG_KEY_0=http.postBuffer",
 			"GIT_CONFIG_VALUE_0=524288000",
 			"GIT_CONFIG_KEY_1=http.version",
 			"GIT_CONFIG_VALUE_1=HTTP/1.1",
+			"GIT_CONFIG_KEY_2=http.lowSpeedLimit",
+			"GIT_CONFIG_VALUE_2=0",
+			"GIT_CONFIG_KEY_3=http.lowSpeedTime",
+			"GIT_CONFIG_VALUE_3=0",
 		)
 	}
 	return append(os.Environ(),
-		"GIT_CONFIG_COUNT=3",
+		"GIT_CONFIG_COUNT=5",
 		"GIT_CONFIG_KEY_0=http.extraHeader",
 		fmt.Sprintf("GIT_CONFIG_VALUE_0=PRIVATE-TOKEN: %s", m.gitlabToken),
 		"GIT_CONFIG_KEY_1=http.postBuffer",
 		"GIT_CONFIG_VALUE_1=524288000",
 		"GIT_CONFIG_KEY_2=http.version",
 		"GIT_CONFIG_VALUE_2=HTTP/1.1",
+		"GIT_CONFIG_KEY_3=http.lowSpeedLimit",
+		"GIT_CONFIG_VALUE_3=0",
+		"GIT_CONFIG_KEY_4=http.lowSpeedTime",
+		"GIT_CONFIG_VALUE_4=0",
 	)
 }
 

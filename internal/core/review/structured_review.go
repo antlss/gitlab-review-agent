@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -87,7 +85,7 @@ func (p *Pipeline) runStructuredChunkReview(
 	toolCfg.GitEnv = p.gitManager.GitEnv()
 	registry := tools.NewRegistry(repoPath, chunkFiles, toolCfg)
 
-	bundle, err := p.buildReviewBundle(ctx, job.GitLabProjectID, repoPath, chunkFiles, baseSHA, job.HeadSHA)
+	bundle, err := p.buildReviewBundle(ctx, job.GitLabProjectID, chunkFiles, baseSHA, job.HeadSHA)
 	if err != nil {
 		return nil, err
 	}
@@ -163,7 +161,6 @@ func (p *Pipeline) runStructuredChunkReview(
 func (p *Pipeline) buildReviewBundle(
 	ctx context.Context,
 	projectID int64,
-	repoPath string,
 	files []domain.DiffFile,
 	baseSHA, headSHA string,
 ) (reviewBundle, error) {
@@ -176,7 +173,7 @@ func (p *Pipeline) buildReviewBundle(
 		}
 		diff = CompactDiff(diff, 2)
 
-		content, mode, err := readChangedFileContext(repoPath, f)
+		content, mode, err := p.readChangedFileContext(ctx, projectID, headSHA, f)
 		if err != nil {
 			return reviewBundle{}, fmt.Errorf("load changed file context for %s: %w", f.Path, err)
 		}
@@ -195,9 +192,8 @@ func (p *Pipeline) buildReviewBundle(
 	return bundle, nil
 }
 
-func readChangedFileContext(repoPath string, diffFile domain.DiffFile) (string, string, error) {
-	absPath := filepath.Join(repoPath, filepath.Clean(diffFile.Path))
-	content, err := os.ReadFile(absPath)
+func (p *Pipeline) readChangedFileContext(ctx context.Context, projectID int64, headSHA string, diffFile domain.DiffFile) (string, string, error) {
+	content, err := p.gitManager.ReadFileAtSHA(ctx, projectID, headSHA, diffFile.Path)
 	if err != nil {
 		return "", "", err
 	}

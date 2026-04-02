@@ -3,8 +3,6 @@ package reply
 import (
 	"context"
 	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -27,7 +25,6 @@ func (a *fakeReplyAgent) GenerateReply(_ context.Context, _ domain.LLMClient, in
 }
 
 type fakeReplyRepoManager struct {
-	repoPath         string
 	projectID        int64
 	projectPath      string
 	headSHA          string
@@ -35,6 +32,7 @@ type fakeReplyRepoManager struct {
 	acquireCalls     int
 	releaseCalls     int
 	fetchCheckoutErr error
+	files            map[string]string
 }
 
 func (m *fakeReplyRepoManager) AcquireGitLock(_ context.Context, projectID int64) error {
@@ -55,8 +53,19 @@ func (m *fakeReplyRepoManager) FetchAndCheckout(_ context.Context, projectID int
 	return m.fetchCheckoutErr
 }
 
+func (m *fakeReplyRepoManager) ReadFileAtSHA(_ context.Context, _ int64, sha, filePath string) ([]byte, error) {
+	if sha != m.headSHA {
+		return nil, errors.New("unexpected sha")
+	}
+	content, ok := m.files[filePath]
+	if !ok {
+		return nil, errors.New("file not found")
+	}
+	return []byte(content), nil
+}
+
 func (m *fakeReplyRepoManager) RepoPath(_ int64) string {
-	return m.repoPath
+	return ""
 }
 
 type fakeReplyJobStore struct {
@@ -164,11 +173,6 @@ func (c *fakeReplyGitLabClient) ResolveDiscussion(_ context.Context, _, _ int64,
 }
 
 func TestPipelineExecuteSyncsLatestRepoStateBeforeGeneratingReply(t *testing.T) {
-	repoRoot := t.TempDir()
-	repoPath := filepath.Join(repoRoot, "42")
-	if err := os.MkdirAll(filepath.Join(repoPath, "pkg"), 0o755); err != nil {
-		t.Fatalf("MkdirAll() error = %v", err)
-	}
 	content := strings.Join([]string{
 		"package pkg",
 		"",
@@ -176,9 +180,6 @@ func TestPipelineExecuteSyncsLatestRepoStateBeforeGeneratingReply(t *testing.T) 
 		"    return nil",
 		"}",
 	}, "\n")
-	if err := os.WriteFile(filepath.Join(repoPath, "pkg/service.go"), []byte(content), 0o644); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
 
 	replyStore := &fakeReplyJobStore{}
 	repoSettings := &fakeReplyRepoSettingsStore{
@@ -202,7 +203,8 @@ func TestPipelineExecuteSyncsLatestRepoStateBeforeGeneratingReply(t *testing.T) 
 		project: &domain.GitLabProject{PathWithNS: "group/project"},
 	}
 	agent := &fakeReplyAgent{reply: "looks good"}
-	repoManager := &fakeReplyRepoManager{repoPath: repoPath}
+	repoManager := &fakeReplyRepoManager{files: map[string]string{"pkg/service.go": content}}
+
 
 	pipeline := NewPipeline(PipelineDeps{
 		Config:        testReplyConfig(),
@@ -273,7 +275,7 @@ func TestPipelineExecuteDoesNotRetryAfterReplyWasPostedWhenCompletionPersistFail
 		FeedbackStore: &fakeReplyFeedbackStore{},
 		GitLabClient:  gitlabClient,
 		ReplyAgent:    &fakeReplyAgent{reply: "acknowledged"},
-		RepoManager:   &fakeReplyRepoManager{repoPath: t.TempDir()},
+		RepoManager:   &fakeReplyRepoManager{},
 	})
 
 	job := &domain.ReplyJob{
