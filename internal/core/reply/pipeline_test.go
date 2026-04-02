@@ -45,7 +45,7 @@ func (m *fakeReplyRepoManager) ReleaseGitLock(_ context.Context, _ int64) {
 	m.releaseCalls++
 }
 
-func (m *fakeReplyRepoManager) FetchAndCheckout(_ context.Context, projectID int64, projectPath, headSHA string) error {
+func (m *fakeReplyRepoManager) FetchAndCheckout(_ context.Context, projectID int64, projectPath string, _ int64, _ string, headSHA string) error {
 	m.fetchCalls++
 	m.projectID = projectID
 	m.projectPath = projectPath

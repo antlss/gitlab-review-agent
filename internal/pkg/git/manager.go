@@ -51,6 +51,14 @@ func (m *Manager) RepoPath(projectID int64) string {
 	return filepath.Join(m.reposDir, fmt.Sprintf("%d", projectID))
 }
 
+func (m *Manager) TargetBranchRef(branch string) string {
+	return targetBranchRef(branch)
+}
+
+func (m *Manager) ReviewMRHeadRef(mrIID int64) string {
+	return reviewMRHeadRef(mrIID)
+}
+
 // AcquireGitLock acquires an in-memory lock for git operations on a project.
 func (m *Manager) AcquireGitLock(ctx context.Context, projectID int64) error {
 	deadline := time.Now().Add(gitLockTimeout)
@@ -85,7 +93,7 @@ func (m *Manager) ReleaseGitLock(_ context.Context, projectID int64) {
 // FetchAndCheckout clones or fetches the repo, then ensures the given SHA exists locally.
 // The repository is intentionally left without checkout so callers can read blobs by SHA
 // without forcing full working tree materialization for large repositories.
-func (m *Manager) FetchAndCheckout(ctx context.Context, projectID int64, projectPath, headSHA string) error {
+func (m *Manager) FetchAndCheckout(ctx context.Context, projectID int64, projectPath string, mrIID int64, targetBranch, headSHA string) error {
 	repoPath := m.RepoPath(projectID)
 	cloneURL := fmt.Sprintf("%s/%s.git", m.gitlabURL, projectPath)
 
@@ -95,20 +103,115 @@ func (m *Manager) FetchAndCheckout(ctx context.Context, projectID int64, project
 	}
 
 	if !cloned {
-		if err := m.fetchWithRetry(ctx, repoPath); err != nil {
+		if err := m.fetchReviewRefsWithRetry(ctx, repoPath, targetBranch, mrIID); err != nil {
 			return fmt.Errorf("git fetch failed after retry: %w", err)
 		}
 	}
 
-	// Verify head SHA exists
 	if err := m.runGit(ctx, repoPath, "cat-file", "-t", headSHA); err != nil {
-		_ = m.fetchWithRetry(ctx, repoPath)
+		_ = m.fetchReviewRefsWithRetry(ctx, repoPath, targetBranch, mrIID)
 		if err2 := m.runGit(ctx, repoPath, "cat-file", "-t", headSHA); err2 != nil {
 			return fmt.Errorf("sha_not_found: %s", headSHA)
 		}
 	}
 
 	return nil
+}
+
+func targetBranchRef(branch string) string {
+	return "refs/remotes/origin/" + branch
+}
+
+func reviewMRHeadRef(mrIID int64) string {
+	return fmt.Sprintf("refs/review-agent/mr/%d/head", mrIID)
+}
+
+func buildReviewFetchRefSpecs(targetBranch string, mrIID int64) []string {
+	var refspecs []string
+	if targetBranch != "" {
+		refspecs = append(refspecs, fmt.Sprintf("+refs/heads/%s:%s", targetBranch, targetBranchRef(targetBranch)))
+	}
+	if mrIID > 0 {
+		refspecs = append(refspecs, fmt.Sprintf("+refs/merge-requests/%d/head:%s", mrIID, reviewMRHeadRef(mrIID)))
+	}
+	return refspecs
+}
+
+func buildReviewGoGitRefSpecs(targetBranch string, mrIID int64) []gitconfig.RefSpec {
+	stringSpecs := buildReviewFetchRefSpecs(targetBranch, mrIID)
+	refspecs := make([]gitconfig.RefSpec, 0, len(stringSpecs))
+	for _, spec := range stringSpecs {
+		refspecs = append(refspecs, gitconfig.RefSpec(spec))
+	}
+	return refspecs
+}
+
+func (m *Manager) fetchReviewRefsWithRetry(ctx context.Context, repoPath, targetBranch string, mrIID int64) error {
+	const maxRetries = 3
+	backoff := 5 * time.Second
+	var lastErr error
+	refspecs := buildReviewFetchRefSpecs(targetBranch, mrIID)
+	if len(refspecs) == 0 {
+		return fmt.Errorf("no fetch refspecs configured")
+	}
+
+	args := []string{"fetch", "origin", "--no-tags", "--filter=blob:none"}
+	args = append(args, refspecs...)
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		if err := m.runGit(ctx, repoPath, args...); err != nil {
+			lastErr = err
+			slog.Warn("git fetch failed, retrying",
+				"attempt", attempt,
+				"max_retries", maxRetries,
+				"path", repoPath,
+				"target_branch", targetBranch,
+				"mr_iid", mrIID,
+				"error", err,
+			)
+			if attempt < maxRetries {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(backoff):
+				}
+				backoff = min(backoff*3, 45*time.Second)
+			}
+			continue
+		}
+		return nil
+	}
+
+	slog.Warn("git fetch via CLI failed, falling back to go-git",
+		"path", repoPath,
+		"target_branch", targetBranch,
+		"mr_iid", mrIID,
+		"error", lastErr,
+	)
+	return m.fetchReviewRefsWithGoGit(ctx, repoPath, targetBranch, mrIID)
+}
+
+func (m *Manager) fetchReviewRefsWithGoGit(ctx context.Context, repoPath, targetBranch string, mrIID int64) error {
+	repo, err := gogit.PlainOpen(repoPath)
+	if err != nil {
+		return err
+	}
+
+	refspecs := buildReviewGoGitRefSpecs(targetBranch, mrIID)
+	if len(refspecs) == 0 {
+		return fmt.Errorf("no fetch refspecs configured")
+	}
+
+	err = repo.FetchContext(ctx, &gogit.FetchOptions{
+		RemoteName: "origin",
+		Auth:       m.goGitAuth(),
+		RefSpecs:   refspecs,
+		Force:      true,
+	})
+	if err == gogit.NoErrAlreadyUpToDate {
+		return nil
+	}
+	return err
 }
 
 func (m *Manager) ReadFileAtSHA(ctx context.Context, projectID int64, sha, filePath string) ([]byte, error) {
@@ -139,7 +242,7 @@ func (m *Manager) ListFilesAtSHA(ctx context.Context, projectID int64, sha, dir 
 		return nil, err
 	}
 	var files []string
-	for line := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
 		line = strings.TrimSpace(line)
 		if line != "" {
 			files = append(files, line)
@@ -201,7 +304,6 @@ func (m *Manager) IsAncestor(ctx context.Context, projectID int64, beforeSHA, he
 	repoPath := m.RepoPath(projectID)
 	err := m.runGit(ctx, repoPath, "merge-base", "--is-ancestor", beforeSHA, headSHA)
 	if err != nil {
-		// Non-zero exit means not an ancestor
 		return false, nil
 	}
 	return true, nil
@@ -227,19 +329,16 @@ func (m *Manager) SHAExists(ctx context.Context, projectID int64, sha string) bo
 func (m *Manager) Diff(ctx context.Context, projectID int64, baseSHA, headSHA string) ([]domain.DiffFile, error) {
 	repoPath := m.RepoPath(projectID)
 
-	// name-status
 	nameStatus, err := m.runGitOutput(ctx, repoPath, "diff", "--name-status", baseSHA+".."+headSHA)
 	if err != nil {
 		return nil, fmt.Errorf("diff name-status: %w", err)
 	}
 
-	// numstat
 	numstat, err := m.runGitOutput(ctx, repoPath, "diff", "--numstat", baseSHA+".."+headSHA)
 	if err != nil {
 		return nil, fmt.Errorf("diff numstat: %w", err)
 	}
 
-	// Parse name-status
 	statusMap := make(map[string]string)
 	oldPathMap := make(map[string]string)
 	for _, line := range strings.Split(strings.TrimSpace(nameStatus), "\n") {
@@ -250,7 +349,7 @@ func (m *Manager) Diff(ctx context.Context, projectID int64, baseSHA, headSHA st
 		if len(parts) < 2 {
 			continue
 		}
-		status := string(parts[0][0]) // First char: A, M, D, R
+		status := string(parts[0][0])
 		path := parts[len(parts)-1]
 		statusMap[path] = status
 		if status == "R" && len(parts) >= 3 {
@@ -258,8 +357,7 @@ func (m *Manager) Diff(ctx context.Context, projectID int64, baseSHA, headSHA st
 		}
 	}
 
-	// Parse numstat
-	statMap := make(map[string][2]int) // added, removed
+	statMap := make(map[string][2]int)
 	for _, line := range strings.Split(strings.TrimSpace(numstat), "\n") {
 		if line == "" {
 			continue
@@ -333,9 +431,6 @@ func (m *Manager) getAddedLines(ctx context.Context, repoPath, baseSHA, headSHA,
 // CloneOrFetch clones the repository if absent, or fetches updates if it
 // already exists locally. It is designed for bulk pre-warm operations; the
 // caller should set an appropriate per-repo deadline on ctx.
-//
-// Returns cloned=true when a fresh clone was performed, false when an
-// existing repo was updated (or was already up to date after a failed fetch).
 func (m *Manager) CloneOrFetch(ctx context.Context, projectID int64, cloneURL string) (cloned bool, err error) {
 	repoPath := m.RepoPath(projectID)
 
@@ -348,7 +443,6 @@ func (m *Manager) CloneOrFetch(ctx context.Context, projectID int64, cloneURL st
 	}
 
 	if _, statErr := os.Stat(filepath.Join(repoPath, ".git")); statErr == nil {
-		// Repo exists — fetch updates with retry
 		if fetchErr := m.fetchWithRetry(ctx, repoPath); fetchErr != nil {
 			return false, fmt.Errorf("fetch: %w", fetchErr)
 		}
@@ -357,8 +451,7 @@ func (m *Manager) CloneOrFetch(ctx context.Context, projectID int64, cloneURL st
 	return false, fmt.Errorf("clone: repository missing after clone preparation")
 }
 
-// fetchWithRetry runs git fetch with exponential backoff to tolerate transient
-// network failures during bulk operations.
+// fetchWithRetry runs broad git fetch for bulk prewarm operations.
 func (m *Manager) fetchWithRetry(ctx context.Context, repoPath string) error {
 	const maxRetries = 3
 	backoff := 5 * time.Second
@@ -393,15 +486,12 @@ func (m *Manager) fetchWithRetry(ctx context.Context, repoPath string) error {
 }
 
 // cloneWithRetry clones a repo with retry logic and cleanup on failure.
-// The clone intentionally keeps all blobs local to avoid checkout-time fetches
-// against promisor remotes during review jobs.
 func (m *Manager) cloneWithRetry(ctx context.Context, cloneURL, repoPath string) error {
 	var lastErr error
 	backoff := cloneRetryDelay
 	for attempt := 1; attempt <= cloneMaxRetries; attempt++ {
 		if err := m.runGit(ctx, "", "clone", "--no-checkout", "--filter=blob:none", cloneURL, repoPath); err != nil {
 			lastErr = err
-			// Clean up failed clone directory to avoid corrupted state.
 			_ = os.RemoveAll(repoPath)
 			slog.Warn("git clone failed, retrying",
 				"attempt", attempt,
@@ -474,8 +564,6 @@ func (m *Manager) goGitAuth() *githttp.BasicAuth {
 
 // GitEnv returns environment variables for git commands that inject the GitLab
 // token, http buffer, and HTTP/1.1 settings via GIT_CONFIG environment variables.
-// HTTP/1.1 is forced to avoid HTTP/2 stream errors with reverse proxies.
-// Exported so that tool implementations can inherit the same git configuration.
 func (m *Manager) GitEnv() []string {
 	if m.gitlabToken == "" {
 		return append(os.Environ(),

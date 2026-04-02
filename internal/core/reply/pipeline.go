@@ -21,7 +21,7 @@ type replyGenerator interface {
 type repoSyncer interface {
 	AcquireGitLock(ctx context.Context, projectID int64) error
 	ReleaseGitLock(ctx context.Context, projectID int64)
-	FetchAndCheckout(ctx context.Context, projectID int64, projectPath, headSHA string) error
+	FetchAndCheckout(ctx context.Context, projectID int64, projectPath string, mrIID int64, targetBranch, headSHA string) error
 	ReadFileAtSHA(ctx context.Context, projectID int64, sha, filePath string) ([]byte, error)
 }
 
@@ -201,7 +201,7 @@ func (p *Pipeline) syncToLatestMRHead(
 	}
 	defer p.repoManager.ReleaseGitLock(ctx, job.GitLabProjectID)
 
-	if err := p.repoManager.FetchAndCheckout(ctx, job.GitLabProjectID, projectPath, mr.HeadSHA); err != nil {
+	if err := p.repoManager.FetchAndCheckout(ctx, job.GitLabProjectID, projectPath, job.MrIID, mr.TargetBranch, mr.HeadSHA); err != nil {
 		return err
 	}
 	return nil

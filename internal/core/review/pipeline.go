@@ -428,12 +428,12 @@ func (p *Pipeline) acquireAndFetch(ctx context.Context, job *domain.ReviewJob, p
 		return err
 	}
 	defer p.gitManager.ReleaseGitLock(ctx, job.GitLabProjectID)
-	return p.gitManager.FetchAndCheckout(ctx, job.GitLabProjectID, projectPath, job.HeadSHA)
+	return p.gitManager.FetchAndCheckout(ctx, job.GitLabProjectID, projectPath, job.MrIID, job.TargetBranch, job.HeadSHA)
 }
 
 func (p *Pipeline) determineBaseSHA(ctx context.Context, job *domain.ReviewJob, fullRecheck bool) (string, error) {
 	if fullRecheck {
-		return p.gitManager.RevParse(ctx, job.GitLabProjectID, "origin/"+job.TargetBranch)
+		return p.gitManager.RevParse(ctx, job.GitLabProjectID, p.gitManager.TargetBranchRef(job.TargetBranch))
 	}
 
 	record, err := p.recordStore.GetLastCompleted(ctx, job.GitLabProjectID, job.MrIID)
@@ -441,13 +441,13 @@ func (p *Pipeline) determineBaseSHA(ctx context.Context, job *domain.ReviewJob, 
 		return "", err
 	}
 	if record == nil {
-		return p.gitManager.RevParse(ctx, job.GitLabProjectID, "origin/"+job.TargetBranch)
+		return p.gitManager.RevParse(ctx, job.GitLabProjectID, p.gitManager.TargetBranchRef(job.TargetBranch))
 	}
 
 	if !p.gitManager.SHAExists(ctx, job.GitLabProjectID, record.HeadSHA) {
 		slog.Info("incremental base SHA not found, using target branch",
 			"project_id", job.GitLabProjectID, "mr_iid", job.MrIID)
-		return p.gitManager.RevParse(ctx, job.GitLabProjectID, "origin/"+job.TargetBranch)
+		return p.gitManager.RevParse(ctx, job.GitLabProjectID, p.gitManager.TargetBranchRef(job.TargetBranch))
 	}
 
 	ancestor, err := p.gitManager.IsAncestor(ctx, job.GitLabProjectID, record.HeadSHA, job.HeadSHA)
